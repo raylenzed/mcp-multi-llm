@@ -31,6 +31,7 @@ class BaseSession(ABC):
     def __init__(self, history_store: HistoryStore):
         self.history_store = history_store
         self.available = True
+        self._cli_not_found: bool = False
 
     @abstractmethod
     async def send(self, message: str, topic: str, timeout: int = 300) -> str:
@@ -81,6 +82,7 @@ class CLISession(BaseSession):
         path = shutil.which(name)
         if path is None:
             self.available = False
+            self._cli_not_found = True
             logger.warning(f"[{self.provider_name}] CLI '{name}' not found in PATH — provider disabled.")
         return path
 
@@ -101,14 +103,16 @@ class CLISession(BaseSession):
 
         response = await self._run_subprocess(cmd, timeout, attempts=2)
 
-        history.add("assistant", response)
-        self.history_store.save(self.provider_name, topic)
+        if not response.startswith("Error:"):
+            history.add("assistant", response)
+            self.history_store.save(self.provider_name, topic)
         return response
 
     async def _run_subprocess(self, cmd: list[str], timeout: int, attempts: int = 1) -> str:
-        """Run a subprocess, retry once on timeout, detect auth errors."""
+        """Run a subprocess with optional retry on timeout. Detects auth errors."""
         last_error: str = ""
         for attempt in range(attempts):
+            proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -142,10 +146,11 @@ class CLISession(BaseSession):
             except asyncio.TimeoutError:
                 last_error = f"{self.provider_name} did not respond within {timeout}s"
                 logger.warning(f"[{self.provider_name}] Timeout on attempt {attempt + 1}")
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+                if proc is not None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                 if attempt + 1 < attempts:
                     continue
 
@@ -161,12 +166,12 @@ class CLISession(BaseSession):
 
     async def health_check(self) -> HealthCheckResult:
         """Test provider with a real lightweight request."""
-        if not self.available:
+        if self._cli_not_found:
             return HealthCheckResult(
                 provider=self.provider_name,
                 status="not_installed",
                 latency_ms=None,
-                error=f"Binary not found in PATH",
+                error="Binary not found in PATH",
                 fix_hint=self._install_hint(),
             )
 
@@ -217,7 +222,7 @@ class CLISession(BaseSession):
             return HealthCheckResult(
                 provider=self.provider_name,
                 status="timeout",
-                latency_ms=30000,
+                latency_ms=int((time.monotonic() - start) * 1000),
                 error="Did not respond within 30s",
                 fix_hint=None,
             )
