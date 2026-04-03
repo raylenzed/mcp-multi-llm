@@ -32,7 +32,9 @@ async def test_send_returns_model_content():
     """Session sends message and returns model reply."""
     session = make_session()
     with pytest.MonkeyPatch.context() as mp:
-        mock_post = AsyncMock(return_value=mock_response("Hello from DeepSeek!"))
+        _mock_response = mock_response("Hello from DeepSeek!")
+        _mock_response.status_code = 200
+        mock_post = AsyncMock(return_value=_mock_response)
         mp.setattr(session._client, "post", mock_post)
         result = await session.send("Hi", "test")
     assert result == "Hello from DeepSeek!"
