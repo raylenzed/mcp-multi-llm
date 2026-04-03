@@ -9,6 +9,17 @@ from history.store import HistoryStore, TopicHistory
 class GeminiSession(CLISession):
     provider_name = "gemini"
 
+    _AUTH_STRINGS = (
+        "oauth",
+        "not authenticated",
+        "please log in",
+        "authentication",
+        "login required",
+        "401",
+        "unauthorized",
+        "credentials",
+    )
+
     def __init__(self, history_store: HistoryStore, model: str | None = None):
         super().__init__(history_store)
         self.model = model
@@ -17,7 +28,6 @@ class GeminiSession(CLISession):
     def _build_prompt_with_context(self, message: str, history: TopicHistory) -> str:
         if len(history.messages) <= 1:
             return message
-
         context = history.format_for_prompt(max_messages=10)
         return (
             f"Previous conversation context:\n{context}\n\n"
@@ -31,9 +41,20 @@ class GeminiSession(CLISession):
             cmd.extend(["-m", self.model])
         return cmd
 
+    def _health_check_command(self) -> list[str]:
+        cmd = [self.cli_path, "-p", "Reply with the single word: ok",
+               "--output-format", "json", "--yolo"]
+        if self.model:
+            cmd.extend(["-m", self.model])
+        return cmd
+
+    def _auth_fix_hint(self) -> str:
+        return "Run 'gemini auth login' in your terminal."
+
+    def _install_hint(self) -> str:
+        return "Run: npm install -g @google/gemini-cli"
+
     def _parse_output(self, stdout: str, stderr: str) -> str:
-        """Parse Gemini CLI JSON output."""
-        # Try JSON first (clean output via --output-format json)
         text = stdout.strip()
         if text:
             try:
@@ -43,7 +64,6 @@ class GeminiSession(CLISession):
             except json.JSONDecodeError:
                 pass
 
-        # Fallback: strip ANSI and noise lines from plain text output
         text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', stdout)
         noise_prefixes = (
             "Loaded cached credentials",
