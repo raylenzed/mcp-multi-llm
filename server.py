@@ -7,7 +7,7 @@ import os
 from fastmcp import FastMCP
 
 from history.store import HistoryStore
-from sessions.base import BaseSession
+from sessions.base import BaseSession, HealthCheckResult
 from sessions.claude_session import ClaudeSession
 from sessions.codex_session import CodexSession
 from sessions.gemini_session import GeminiSession
@@ -36,6 +36,9 @@ mcp = FastMCP(
 )
 
 history_store = HistoryStore()
+
+_dismissed: set[str] = set()
+_health_cache: dict[str, "HealthCheckResult"] = {}
 
 
 def _session_from_cfg(cfg) -> BaseSession:
@@ -114,15 +117,103 @@ for _cfg in _custom_cfgs:
 @mcp.tool()
 async def list_available_providers() -> str:
     """List which LLM providers are available for consultation."""
-    available = [name for name, s in _all_providers.items() if s.available]
-    unavailable = [name for name, s in _all_providers.items() if not s.available]
+    available = [name for name, s in _all_providers.items() if s.available and name not in _dismissed]
+    unavailable = [name for name, s in _all_providers.items() if not s.available or name in _dismissed]
     lines = []
     if available:
         lines.append("Available: " + ", ".join(available))
     if unavailable:
-        lines.append("Not installed: " + ", ".join(unavailable) +
-                     " (check installation or configuration and restart the server)")
+        lines.append("Not available: " + ", ".join(unavailable))
+    lines.append("Tip: call health_check_providers() to test real connectivity and authentication.")
     return "\n".join(lines) or "No providers available."
+
+
+@mcp.tool()
+async def health_check_providers(
+    providers: list[str] | None = None,
+    force: bool = False,
+) -> str:
+    """Test real connectivity and authentication for all (or specified) providers.
+
+    Runs a lightweight real request to each provider in parallel. Results are cached
+    for this session; pass force=True to re-test cached providers.
+
+    Args:
+        providers: List of provider names to test, or None to test all.
+        force: Re-test even if cached results exist for this session.
+    """
+    if providers is None:
+        targets = dict(_all_providers)
+    else:
+        targets = {n: _all_providers[n] for n in providers if n in _all_providers}
+        unknown = [n for n in providers if n not in _all_providers]
+        if unknown:
+            return f"Unknown providers: {', '.join(unknown)}. Available: {', '.join(_all_providers.keys())}"
+
+    to_test = {n: s for n, s in targets.items() if force or n not in _health_cache}
+
+    if to_test:
+        results = await asyncio.gather(
+            *[s.health_check() for s in to_test.values()],
+            return_exceptions=True,
+        )
+        for name, result in zip(to_test.keys(), results):
+            if isinstance(result, Exception):
+                _health_cache[name] = HealthCheckResult(
+                    provider=name,
+                    status="error",
+                    latency_ms=None,
+                    error=str(result),
+                    fix_hint=None,
+                )
+            else:
+                _health_cache[name] = result
+                if result.status != "ok":
+                    _all_providers[name].available = False
+
+    lines = ["## Provider Health Check\n"]
+    ok_count = 0
+    fail_count = 0
+
+    for name in targets:
+        r = _health_cache.get(name)
+        if r is None:
+            continue
+
+        if name in _dismissed:
+            lines.append(f"○ {name:<14} — dismissed for this session")
+            continue
+
+        if r.status == "ok":
+            ok_count += 1
+            latency = f"({r.latency_ms}ms)" if r.latency_ms is not None else ""
+            lines.append(f"✓ {name:<14} — ok {latency}")
+        else:
+            fail_count += 1
+            lines.append(f"✗ {name:<14} — {r.error or r.status}")
+            if r.fix_hint:
+                lines.append(f"  Fix: {r.fix_hint}")
+
+    lines.append(f"\n{ok_count} available, {fail_count} unavailable.")
+    if fail_count > 0:
+        lines.append('Call dismiss_provider("name") to skip a provider for this session.')
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def dismiss_provider(name: str) -> str:
+    """Skip a provider for this session. Excluded from group_discuss and future health checks.
+
+    Args:
+        name: The provider name to dismiss (e.g. "gemini", "codex").
+    """
+    if name not in _all_providers:
+        return f"Unknown provider '{name}'. Known providers: {', '.join(_all_providers.keys())}"
+
+    _dismissed.add(name)
+    _all_providers[name].available = False
+    return f"'{name}' dismissed for this session. It will be skipped in group_discuss."
 
 
 if _HOST != "claude":
