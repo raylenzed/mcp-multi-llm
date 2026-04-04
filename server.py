@@ -24,6 +24,17 @@ _HOST = os.environ.get("MCP_HOST_PROVIDER", "").lower().strip()
 if _HOST:
     logger.info(f"[server] Host provider: '{_HOST}' — its discuss tool will be omitted.")
 
+# Language preference: e.g. MCP_LANGUAGE=zh → all providers respond in Chinese
+_LANGUAGE = os.environ.get("MCP_LANGUAGE", "").strip() or None
+if _LANGUAGE:
+    logger.info(f"[server] Language preference: '{_LANGUAGE}'")
+
+# Project scope: e.g. MCP_PROJECT=my-app → history stored under ~/.mcp-multi-llm/history/my-app/
+_PROJECT = os.environ.get("MCP_PROJECT", "").strip()
+if not _PROJECT:
+    _PROJECT = os.path.basename(os.getcwd()) or "default"
+logger.info(f"[server] Project scope: '{_PROJECT}'")
+
 mcp = FastMCP(
     "multi-llm",
     instructions=(
@@ -35,7 +46,7 @@ mcp = FastMCP(
     ),
 )
 
-history_store = HistoryStore()
+history_store = HistoryStore(project=_PROJECT)
 
 _dismissed: set[str] = set()
 _health_cache: dict[str, "HealthCheckResult"] = {}
@@ -49,6 +60,7 @@ def _session_from_cfg(cfg) -> BaseSession:
             base_url=cfg.base_url,
             model=cfg.model,
             api_key=cfg.api_key,
+            language=_LANGUAGE,
         )
     return OpenAICompatSession(
         history_store=history_store,
@@ -57,6 +69,7 @@ def _session_from_cfg(cfg) -> BaseSession:
         model=cfg.model,
         api_key=cfg.api_key,
         extra_body=cfg.extra_body,
+        language=_LANGUAGE,
     )
 
 
@@ -68,15 +81,15 @@ _custom_cfgs = [cfg for cfg in _all_cfgs if cfg.name.lower() not in ("claude", "
 
 claude: BaseSession = (
     _session_from_cfg(_cfg_by_name["claude"]) if "claude" in _cfg_by_name
-    else ClaudeSession(history_store)
+    else ClaudeSession(history_store, language=_LANGUAGE)
 )
 codex: BaseSession = (
     _session_from_cfg(_cfg_by_name["codex"]) if "codex" in _cfg_by_name
-    else CodexSession(history_store)
+    else CodexSession(history_store, language=_LANGUAGE)
 )
 gemini: BaseSession = (
     _session_from_cfg(_cfg_by_name["gemini"]) if "gemini" in _cfg_by_name
-    else GeminiSession(history_store)
+    else GeminiSession(history_store, language=_LANGUAGE)
 )
 
 _all_providers: dict[str, BaseSession] = {}

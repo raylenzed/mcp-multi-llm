@@ -28,10 +28,23 @@ class BaseSession(ABC):
 
     provider_name: str = "base"
 
-    def __init__(self, history_store: HistoryStore):
+    def __init__(self, history_store: HistoryStore, language: str | None = None):
         self.history_store = history_store
         self.available = True
         self._cli_not_found: bool = False
+        self.language = language
+
+    def _language_instruction(self) -> str | None:
+        """Return a language instruction string, or None if no language is set."""
+        if not self.language:
+            return None
+        _LANG_NAMES = {
+            "zh": "Chinese (中文)", "en": "English", "ja": "Japanese (日本語)",
+            "ko": "Korean (한국어)", "fr": "French", "de": "German",
+            "es": "Spanish", "ru": "Russian", "pt": "Portuguese",
+        }
+        lang_name = _LANG_NAMES.get(self.language, self.language)
+        return f"Please respond in {lang_name}."
 
     @abstractmethod
     async def send(self, message: str, topic: str, timeout: int = 300) -> str:
@@ -62,6 +75,13 @@ class CLISession(BaseSession):
 
     # Subclasses set these
     _AUTH_STRINGS: tuple[str, ...] = _CLI_AUTH_STRINGS
+
+    def _prepend_language(self, prompt: str) -> str:
+        """Prepend language instruction to a prompt if language is set."""
+        instruction = self._language_instruction()
+        if instruction:
+            return f"{instruction}\n\n{prompt}"
+        return prompt
 
     @abstractmethod
     def _build_command(self, message: str, history: TopicHistory) -> list[str]:

@@ -29,8 +29,9 @@ class AnthropicCompatSession(BaseSession):
         model: str,
         api_key: str,
         max_tokens: int = 8192,
+        language: str | None = None,
     ):
-        super().__init__(history_store)
+        super().__init__(history_store, language=language)
         self.provider_name = name
         self.model = model
         self.max_tokens = max_tokens
@@ -64,13 +65,17 @@ class AnthropicCompatSession(BaseSession):
         last_error: str = ""
         for attempt in range(3):
             try:
+                body: dict = {
+                    "model": self.model,
+                    "max_tokens": self.max_tokens,
+                    "messages": messages,
+                }
+                instruction = self._language_instruction()
+                if instruction:
+                    body["system"] = instruction
                 response = await self._client.post(
                     "/v1/messages",
-                    json={
-                        "model": self.model,
-                        "max_tokens": self.max_tokens,
-                        "messages": messages,
-                    },
+                    json=body,
                     timeout=timeout,
                 )
 

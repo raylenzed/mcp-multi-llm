@@ -22,8 +22,9 @@ class OpenAICompatSession(APISession):
         model: str,
         api_key: str,
         extra_body: dict | None = None,
+        language: str | None = None,
     ):
-        super().__init__(history_store, base_url=base_url, api_key=api_key)
+        super().__init__(history_store, base_url=base_url, api_key=api_key, language=language)
         self.provider_name = name
         self.model = model
         self.extra_body = extra_body or {}
@@ -31,6 +32,9 @@ class OpenAICompatSession(APISession):
     def _build_messages(self, history: TopicHistory) -> list[dict]:
         """Build OpenAI-format messages array from history (includes current message)."""
         messages = []
+        instruction = self._language_instruction()
+        if instruction:
+            messages.append({"role": "system", "content": instruction})
         for msg in history.messages[-10:]:
             role = "user" if msg.role == "user" else "assistant"
             messages.append({"role": role, "content": msg.content})

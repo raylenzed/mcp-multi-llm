@@ -67,6 +67,9 @@ Any agent that supports MCP can be the host:
 | **Context Continuity** | Conversations scoped by topic, context carries across rounds |
 | **Parallel Consultation** | `group_discuss` queries all available LLMs simultaneously |
 | **Persistent History** | Conversation history saved to disk, survives restarts |
+| **Project Isolation** | Each project's history stored separately via `MCP_PROJECT` env var |
+| **Language Control** | All providers respond in your language via `MCP_LANGUAGE` env var |
+| **Chat Viewer** | Local web UI (`viewer.py`) with WeChat-style chat bubbles, group chat merging, and provider logos |
 
 | 功能 | 说明 |
 |------|------|
@@ -79,6 +82,9 @@ Any agent that supports MCP can be the host:
 | **上下文连续** | 按主题维护对话，多轮讨论保持上下文 |
 | **并行咨询** | `group_discuss` 同时向所有可用模型提问 |
 | **持久化历史** | 对话历史保存到磁盘，重启不丢失 |
+| **项目隔离** | 通过 `MCP_PROJECT` 环境变量按项目分开存储历史 |
+| **语言控制** | 通过 `MCP_LANGUAGE` 环境变量让所有模型用指定语言回复 |
+| **对话查看器** | 本地 Web UI（`viewer.py`），微信风格气泡、群聊合并视图、provider logo |
 
 ## Prerequisites / 前提条件
 
@@ -111,7 +117,12 @@ Add to `~/.claude.json` under `mcpServers`:
     "multi-llm": {
       "command": "uv",
       "args": ["run", "--directory", "/path/to/mcp-multi-llm", "python", "server.py"],
-      "type": "stdio"
+      "type": "stdio",
+      "env": {
+        "MCP_HOST_PROVIDER": "claude",
+        "MCP_PROJECT": "my-project-name",
+        "MCP_LANGUAGE": "zh"
+      }
     }
   }
 }
@@ -123,9 +134,38 @@ Add to `~/.claude.json` under `mcpServers`:
 codex mcp add multi-llm -- uv run --directory /path/to/mcp-multi-llm python server.py
 ```
 
+Then edit `~/.codex/config.json` to add env vars under the `multi-llm` entry:
+
+然后在 `~/.codex/config.json` 的 `multi-llm` 条目中添加 env：
+
+```json
+{
+  "mcpServers": {
+    "multi-llm": {
+      "command": "...",
+      "env": {
+        "MCP_HOST_PROVIDER": "codex",
+        "MCP_PROJECT": "my-project-name",
+        "MCP_LANGUAGE": "zh"
+      }
+    }
+  }
+}
+```
+
 Restart your agent and the tools will be available.
 
 重启你的 Agent 后即可使用。
+
+### Environment Variables / 环境变量
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `MCP_HOST_PROVIDER` | 当前主控 AI 的名称，跳过注册对应的 `discuss_with_*` 工具 | `claude`、`codex` |
+| `MCP_PROJECT` | 项目标识，历史记录存入独立子目录（不设则取 CWD 目录名） | `my-web-app` |
+| `MCP_LANGUAGE` | 语言偏好，所有 AI 回复都会使用该语言 | `zh`、`en`、`ja` |
+
+支持的语言代码：`zh`（中文）、`en`（英文）、`ja`（日文）、`ko`（韩文）、`fr`（法文）、`de`（德文）、`es`（西班牙文）、`ru`（俄文）、`pt`（葡萄牙文）
 
 ---
 
@@ -305,7 +345,7 @@ topic 还是 "db-design"。
 
 **Q: 对话历史会一直保留吗？**
 
-会，保存在 `~/.mcp-multi-llm/history/`。用 `clear_discussion` 清除指定 topic，或换一个新的 topic 名字开启全新讨论。
+会，保存在 `~/.mcp-multi-llm/history/{project}/`（配置了 `MCP_PROJECT` 时）或 `~/.mcp-multi-llm/history/`（未配置时）。用 `clear_discussion` 清除指定 topic，或换一个新的 topic 名字开启全新讨论。
 
 **Q: topic 名字有什么规则吗？**
 
@@ -322,8 +362,47 @@ topic 还是 "db-design"。
 | `discuss_with_<name>` | 向任意自定义 provider 提问（自动注册） |
 | `group_discuss` | 并行向所有可用模型提问 |
 | `list_available_providers` | 列出所有可用 / 不可用的 provider |
+| `health_check_providers` | 测试各 provider 的连通性和鉴权状态 |
+| `dismiss_provider` | 临时将某 provider 排除在本次会话之外 |
 | `list_discussions` | 列出所有进行中的讨论主题 |
 | `clear_discussion` | 清除某个主题的对话历史 |
+
+---
+
+## Chat Viewer / 对话查看器
+
+A local web UI for browsing conversation history in a chat-app style.
+
+本地 Web UI，以聊天软件风格浏览对话历史。
+
+```bash
+uv run python viewer.py        # http://localhost:7432
+uv run python viewer.py 8080   # 自定义端口
+```
+
+### Features / 功能
+
+- **项目选择器** — 顶部下拉菜单切换项目，各项目历史独立展示
+- **私聊视图** — 单 provider 对话，气泡+头像布局（类微信）
+- **群聊视图** — 多 provider 同一 topic 的消息按时间合并，2×2 头像展示（类群聊）
+- **自动刷新** — 每 3 秒拉取最新消息，实时跟进进行中的讨论
+- **搜索过滤** — 侧边栏支持按 topic / provider 名搜索
+
+### Provider Logos / 服务商 Logo
+
+在项目根目录创建 `logos/` 文件夹，放入各服务商的 logo 图片，文件名与 `custom_providers.json` 中的 `name` 字段一致：
+
+```
+logos/
+├── claude.png
+├── codex.png
+├── gemini.png
+├── GLM.png
+├── MiniMax.png
+└── Moonshot.png
+```
+
+支持 `.png`、`.jpg`、`.jpeg`、`.svg`、`.webp` 格式。找不到 logo 时自动 fallback 到彩色首字母头像。
 
 ---
 
@@ -331,19 +410,28 @@ topic 还是 "db-design"。
 
 ```
 mcp-multi-llm/
-├── server.py                      # FastMCP server, dynamic tool registration
+├── server.py                       # FastMCP server, dynamic tool registration
+├── viewer.py                       # Local web chat viewer
+├── logos/                          # Provider logo images (optional)
+│   ├── claude.png
+│   └── ...
 ├── sessions/
-│   ├── base.py                    # BaseSession (abstract) + CLISession (subprocess)
-│   ├── api_session.py             # APISession (httpx base)
-│   ├── claude_session.py          # Claude CLI provider
-│   ├── codex_session.py           # Codex CLI provider
-│   ├── openai_compat_session.py   # OpenAI-compatible API providers
-│   ├── anthropic_compat_session.py# Anthropic-compatible API providers
-│   └── provider_config.py         # Load custom_providers.json + settings.json
+│   ├── base.py                     # BaseSession (abstract) + CLISession (subprocess)
+│   ├── api_session.py              # APISession (httpx base)
+│   ├── claude_session.py           # Claude CLI provider
+│   ├── codex_session.py            # Codex CLI provider
+│   ├── gemini_session.py           # Gemini CLI provider
+│   ├── openai_compat_session.py    # OpenAI-compatible API providers
+│   ├── anthropic_compat_session.py # Anthropic-compatible API providers
+│   └── provider_config.py          # Load custom_providers.json
 ├── history/
-│   └── store.py                   # Conversation history persistence
+│   └── store.py                    # Conversation history persistence (project-scoped)
 └── pyproject.toml
 ```
+
+History is stored at `~/.mcp-multi-llm/history/{project}/` when `MCP_PROJECT` is set.
+
+历史记录在设置 `MCP_PROJECT` 后保存于 `~/.mcp-multi-llm/history/{project}/`。
 
 ### CLI vs API / 为什么 Claude/Codex 默认走 CLI？
 

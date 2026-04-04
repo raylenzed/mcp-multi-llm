@@ -19,6 +19,7 @@ class TopicHistory:
     provider: str  # "codex" or "gemini"
     messages: list[Message] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
+    project: str = "default"
 
     def add(self, role: str, content: str):
         self.messages.append(Message(role=role, content=content))
@@ -39,10 +40,12 @@ class TopicHistory:
 class HistoryStore:
     """Persist conversation histories to disk."""
 
-    def __init__(self, storage_dir: str | Path | None = None):
+    def __init__(self, storage_dir: str | Path | None = None, project: str = "default"):
         if storage_dir is None:
             storage_dir = Path.home() / ".mcp-multi-llm" / "history"
-        self.storage_dir = Path(storage_dir)
+        self.base_dir = Path(storage_dir)
+        self.project = project
+        self.storage_dir = self.base_dir / project
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self._topics: dict[str, TopicHistory] = {}
 
@@ -61,9 +64,10 @@ class HistoryStore:
                     provider=data["provider"],
                     messages=[Message(**m) for m in data["messages"]],
                     created_at=data["created_at"],
+                    project=data.get("project", self.project),
                 )
             else:
-                history = TopicHistory(topic=topic, provider=provider)
+                history = TopicHistory(topic=topic, provider=provider, project=self.project)
             self._topics[key] = history
         return self._topics[key]
 

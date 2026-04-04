@@ -17,8 +17,8 @@ class ClaudeSession(CLISession):
         "login",
     )
 
-    def __init__(self, history_store: HistoryStore, model: str = "claude-opus-4-6"):
-        super().__init__(history_store)
+    def __init__(self, history_store: HistoryStore, model: str = "claude-opus-4-6", language: str | None = None):
+        super().__init__(history_store, language=language)
         self.model = model
         self.cli_path = self._get_cli_path("claude")
 
@@ -32,7 +32,7 @@ class ClaudeSession(CLISession):
         )
 
     def _build_command(self, message: str, history: TopicHistory) -> list[str]:
-        prompt = self._build_prompt_with_context(message, history)
+        prompt = self._prepend_language(self._build_prompt_with_context(message, history))
         return [
             self.cli_path,
             "-p", prompt,
