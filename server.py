@@ -14,6 +14,7 @@ from sessions.gemini_session import GeminiSession
 from sessions.openai_compat_session import OpenAICompatSession
 from sessions.anthropic_compat_session import AnthropicCompatSession
 from sessions.provider_config import load_custom_providers
+from app_factory_roundtable import run_app_factory_roundtable
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ _health_cache: dict[str, "HealthCheckResult"] = {}
 
 def _session_from_cfg(cfg) -> BaseSession:
     if cfg.protocol == "anthropic":
-        return AnthropicCompatSession(
+        session = AnthropicCompatSession(
             history_store=history_store,
             name=cfg.name,
             base_url=cfg.base_url,
@@ -62,15 +63,18 @@ def _session_from_cfg(cfg) -> BaseSession:
             api_key=cfg.api_key,
             language=_LANGUAGE,
         )
-    return OpenAICompatSession(
-        history_store=history_store,
-        name=cfg.name,
-        base_url=cfg.base_url,
-        model=cfg.model,
-        api_key=cfg.api_key,
-        extra_body=cfg.extra_body,
-        language=_LANGUAGE,
-    )
+    else:
+        session = OpenAICompatSession(
+            history_store=history_store,
+            name=cfg.name,
+            base_url=cfg.base_url,
+            model=cfg.model,
+            api_key=cfg.api_key,
+            extra_body=cfg.extra_body,
+            language=_LANGUAGE,
+        )
+    session.capabilities = set(cfg.capabilities)
+    return session
 
 
 # --- Load all providers from config ---
@@ -125,6 +129,38 @@ for _cfg in _custom_cfgs:
     logger.info(f"[server] Registered custom provider: {_cfg.name}")
 
 
+def _provider_names() -> str:
+    return ", ".join(_all_providers.keys())
+
+
+def _resolve_provider_name(name: str) -> str | None:
+    """Resolve provider names case-insensitively to their registered key."""
+    requested = name.strip().lower()
+    for provider_name in _all_providers:
+        if provider_name.lower() == requested:
+            return provider_name
+    return None
+
+
+def _resolve_provider_targets(providers: list[str] | None) -> tuple[dict[str, BaseSession], list[str]]:
+    if providers is None:
+        return dict(_all_providers), []
+
+    targets: dict[str, BaseSession] = {}
+    unknown: list[str] = []
+    for provider in providers:
+        resolved = _resolve_provider_name(provider)
+        if resolved is None:
+            unknown.append(provider)
+            continue
+        targets.setdefault(resolved, _all_providers[resolved])
+    return targets, unknown
+
+
+def _history_provider_name(provider_name: str) -> str:
+    return _all_providers[provider_name].provider_name
+
+
 # --- Built-in tools ---
 
 @mcp.tool()
@@ -155,15 +191,14 @@ async def health_check_providers(
         providers: List of provider names to test, or None to test all.
         force: Re-test even if cached results exist for this session.
     """
-    if providers is None:
-        targets = dict(_all_providers)
-    else:
-        targets = {n: _all_providers[n] for n in providers if n in _all_providers}
-        unknown = [n for n in providers if n not in _all_providers]
-        if unknown:
-            return f"Unknown providers: {', '.join(unknown)}. Available: {', '.join(_all_providers.keys())}"
+    targets, unknown = _resolve_provider_targets(providers)
+    if unknown:
+        return f"Unknown providers: {', '.join(unknown)}. Available: {_provider_names()}"
 
-    to_test = {n: s for n, s in targets.items() if force or n not in _health_cache}
+    to_test = {
+        n: s for n, s in targets.items()
+        if n not in _dismissed and (force or n not in _health_cache)
+    }
 
     if to_test:
         results = await asyncio.gather(
@@ -183,6 +218,8 @@ async def health_check_providers(
                 _health_cache[name] = result
                 if result.status != "ok":
                     _all_providers[name].available = False
+                elif name not in _dismissed:
+                    _all_providers[name].available = True
 
     lines = ["## Provider Health Check\n"]
     ok_count = 0
@@ -221,12 +258,51 @@ async def dismiss_provider(name: str) -> str:
     Args:
         name: The provider name to dismiss (e.g. "gemini", "codex").
     """
-    if name not in _all_providers:
-        return f"Unknown provider '{name}'. Known providers: {', '.join(_all_providers.keys())}"
+    provider_name = _resolve_provider_name(name)
+    if provider_name is None:
+        return f"Unknown provider '{name}'. Known providers: {_provider_names()}"
 
-    _dismissed.add(name)
-    _all_providers[name].available = False
-    return f"'{name}' dismissed for this session. It will be skipped in group_discuss."
+    _dismissed.add(provider_name)
+    _all_providers[provider_name].available = False
+    return f"'{provider_name}' dismissed for this session. It will be skipped in group_discuss."
+
+
+@mcp.tool()
+async def app_factory_roundtable(
+    app_name: str,
+    app_mode: str,
+    pitch: str,
+    data_brief: str,
+    keywords: list[str] | None = None,
+    min_participants: int = 2,
+    max_participants: int = 5,
+    force_health_check: bool = False,
+) -> dict:
+    """Run a two-round App Factory market review with multiple LLM providers.
+
+    Args:
+        app_name: Candidate app name.
+        app_mode: One of "local", "freeserver", or "paidserver".
+        pitch: Candidate app pitch without DATA BRIEF.
+        data_brief: Local tool evidence from RespectASO/review_miner/reddit_miner.
+        keywords: Optional App Store/search keywords for independent research.
+        min_participants: Minimum desired participant count. Fewer returns partial.
+        max_participants: Maximum providers to include.
+        force_health_check: Re-test providers before selecting participants.
+    """
+    return await run_app_factory_roundtable(
+        providers=_all_providers,
+        dismissed=_dismissed,
+        health_cache=_health_cache,
+        app_name=app_name,
+        app_mode=app_mode,
+        pitch=pitch,
+        data_brief=data_brief,
+        keywords=keywords,
+        min_participants=min_participants,
+        max_participants=max_participants,
+        force_health_check=force_health_check,
+    )
 
 
 if _HOST != "claude":
@@ -273,7 +349,7 @@ async def group_discuss(message: str, topic: str = "general") -> str:
         message: The question or topic to discuss with all available LLMs.
         topic: Conversation topic for context continuity.
     """
-    active = {name: s for name, s in _all_providers.items() if s.available}
+    active = {name: s for name, s in _all_providers.items() if s.available and name not in _dismissed}
     if not active:
         return "No providers available. Install at least one CLI (claude, codex, gemini) or add custom providers."
 
@@ -305,10 +381,18 @@ async def clear_discussion(topic: str, provider: str | None = None) -> str:
         topic: The topic to clear.
         provider: Optional — provider name, or None to clear for all providers.
     """
-    providers = [provider] if provider else list(_all_providers.keys())
-    for p in providers:
+    if provider:
+        provider_name = _resolve_provider_name(provider)
+        if provider_name is None:
+            return f"Unknown provider '{provider}'. Known providers: {_provider_names()}"
+        providers = [provider_name]
+    else:
+        providers = list(_all_providers.keys())
+
+    history_names = [_history_provider_name(p) for p in providers]
+    for p in history_names:
         history_store.clear_topic(p, topic)
-    return f"Cleared discussion '{topic}' for {', '.join(providers)}."
+    return f"Cleared discussion '{topic}' for {', '.join(history_names)}."
 
 
 def _shutdown_api_sessions():

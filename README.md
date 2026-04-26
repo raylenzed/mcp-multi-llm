@@ -66,10 +66,11 @@ Any agent that supports MCP can be the host:
 | **CLI ↔ API Switch** | Claude/Codex can be switched from CLI to direct API via settings |
 | **Context Continuity** | Conversations scoped by topic, context carries across rounds |
 | **Parallel Consultation** | `group_discuss` queries all available LLMs simultaneously |
+| **App Factory Roundtable** | `app_factory_roundtable` runs a structured two-round market review for app-factory skills |
 | **Persistent History** | Conversation history saved to disk, survives restarts |
 | **Project Isolation** | Each project's history stored separately via `MCP_PROJECT` env var |
 | **Language Control** | All providers respond in your language via `MCP_LANGUAGE` env var |
-| **Chat Viewer** | Local web UI (`viewer.py`) with WeChat-style chat bubbles, group chat merging, and provider logos |
+| **Web Console** | Local web UI (`viewer.py`) with standalone chat, history, and App Factory roundtable runner |
 
 | 功能 | 说明 |
 |------|------|
@@ -81,10 +82,11 @@ Any agent that supports MCP can be the host:
 | **CLI ↔ API 切换** | Claude/Codex 可通过 settings 文件切换到直接 API 模式 |
 | **上下文连续** | 按主题维护对话，多轮讨论保持上下文 |
 | **并行咨询** | `group_discuss` 同时向所有可用模型提问 |
+| **App Factory 圆桌评审** | `app_factory_roundtable` 为 app-factory skills 执行结构化两轮选题评审 |
 | **持久化历史** | 对话历史保存到磁盘，重启不丢失 |
 | **项目隔离** | 通过 `MCP_PROJECT` 环境变量按项目分开存储历史 |
 | **语言控制** | 通过 `MCP_LANGUAGE` 环境变量让所有模型用指定语言回复 |
-| **对话查看器** | 本地 Web UI（`viewer.py`），微信风格气泡、群聊合并视图、provider logo |
+| **Web 控制台** | 本地 Web UI（`viewer.py`），可发起独立对话、查看历史并运行 App Factory 圆桌评审 |
 
 ## Prerequisites / 前提条件
 
@@ -231,8 +233,25 @@ For providers that implement the Anthropic `/v1/messages` API format:
 | `api_key` | ✅ | API Key |
 | `protocol` | — | `"openai"`（默认）或 `"anthropic"` |
 | `extra_body` | — | 合并进请求 body 的额外字段（仅 openai 协议有效） |
+| `capabilities` | — | 声明 provider 能力，例如 `["web_search"]`；用于 App Factory 第二轮独立自采 |
 
 重启 MCP 服务后，每个模型会自动注册为独立工具：`discuss_with_gemini`、`discuss_with_deepseek`…
+
+如果某个 API provider 本身具备联网搜索能力，可以这样声明，让它参与 `app_factory_roundtable` 的第二轮独立自采：
+
+```json
+[
+  {
+    "name": "searchy",
+    "base_url": "https://example.com/v1",
+    "model": "search-model",
+    "api_key": "your-key",
+    "capabilities": ["web_search"]
+  }
+]
+```
+
+Claude/Codex/Gemini 等 CLI provider 默认视为可自采；普通 HTTP API provider 默认只参与评审，不计入独立搜索证据。
 
 ### Common providers / 常用 provider 参考
 
@@ -337,6 +356,37 @@ topic 还是 "db-design"。
 
 ---
 
+### 场景 4：App Factory 多模型圆桌评审
+
+`app_factory_roundtable` 是给 app-factory skills 使用的结构化工具。它会自动健康检查、选择 2-5 个可用模型、执行两轮评审，并返回 JSON + 中文摘要。
+
+```json
+{
+  "app_name": "Tiny Invoice",
+  "app_mode": "local",
+  "pitch": "=== PITCH ===\nApp: Tiny Invoice\n...",
+  "data_brief": "=== DATA BRIEF v1 ===\n关键词热度...\n...",
+  "keywords": ["invoice tracker", "receipt log"],
+  "min_participants": 2,
+  "max_participants": 5
+}
+```
+
+返回核心字段：
+
+| 字段 | 说明 |
+|------|------|
+| `status` | `completed` / `partial` / `skipped` |
+| `participants` | 实际参与模型、健康状态、是否具备独立自采能力 |
+| `rounds` | 第一轮本地数据评审、第二轮模型自采评审、各自投票 |
+| `comparison` | 本地数据与模型自采数据的一致性检查 |
+| `final_gate` | `PROCEED_TO_EVIDENCE_CARD` / `NEEDS_EVIDENCE` / `KILL` / `SKIPPED` |
+| `summary_markdown` | 可直接写入 app-factory Phase 报告的中文摘要 |
+
+注意：这个工具永远不会输出 `BUILD_READY`。它最多只允许进入证据卡和最终风控，保留 app-factory skills 的硬闸门语义。
+
+---
+
 ### 常见问题
 
 **Q: 某个模型没有响应怎么办？**
@@ -361,6 +411,7 @@ topic 还是 "db-design"。
 | `discuss_with_codex` | 向 Codex 提问（CLI 模式默认） |
 | `discuss_with_<name>` | 向任意自定义 provider 提问（自动注册） |
 | `group_discuss` | 并行向所有可用模型提问 |
+| `app_factory_roundtable` | 为 app-factory 执行两轮多模型选题评审，返回结构化 JSON |
 | `list_available_providers` | 列出所有可用 / 不可用的 provider |
 | `health_check_providers` | 测试各 provider 的连通性和鉴权状态 |
 | `dismiss_provider` | 临时将某 provider 排除在本次会话之外 |
@@ -369,11 +420,11 @@ topic 还是 "db-design"。
 
 ---
 
-## Chat Viewer / 对话查看器
+## Web Console / Web 控制台
 
-A local web UI for browsing conversation history in a chat-app style.
+本地 Web 控制台，可发起独立多模型对话、浏览历史，也可直接运行 App Factory 圆桌评审。
 
-本地 Web UI，以聊天软件风格浏览对话历史。
+A local web console for standalone multi-model chat, conversation history, and App Factory roundtable reviews.
 
 ```bash
 uv run python viewer.py        # http://localhost:7432
@@ -383,6 +434,9 @@ uv run python viewer.py 8080   # 自定义端口
 ### Features / 功能
 
 - **项目选择器** — 顶部下拉菜单切换项目，各项目历史独立展示
+- **独立对话** — 选择单个 provider 或 `group_discuss`，用新 topic 发起隔离会话
+- **圆桌评审** — 填入 App Name、mode、Pitch、DATA BRIEF v1，调用 `app_factory_roundtable`
+- **结构化结果** — 展示 `status`、`final_gate`、参与模型、中文摘要和完整 JSON
 - **私聊视图** — 单 provider 对话，气泡+头像布局（类微信）
 - **群聊视图** — 多 provider 同一 topic 的消息按时间合并，2×2 头像展示（类群聊）
 - **自动刷新** — 每 3 秒拉取最新消息，实时跟进进行中的讨论
@@ -411,6 +465,7 @@ logos/
 ```
 mcp-multi-llm/
 ├── server.py                       # FastMCP server, dynamic tool registration
+├── app_factory_roundtable.py       # App Factory two-round evaluation orchestrator
 ├── viewer.py                       # Local web chat viewer
 ├── logos/                          # Provider logo images (optional)
 │   ├── claude.png

@@ -22,6 +22,7 @@ def test_load_valid_config(tmp_path):
     assert providers[0].name == "deepseek"
     assert providers[0].model == "deepseek-chat"
     assert providers[0].api_key == "sk-123"
+    assert providers[0].capabilities == []
 
 
 def test_load_missing_file_returns_empty(tmp_path):
@@ -41,22 +42,24 @@ def test_invalid_name_is_skipped(tmp_path):
     assert providers[0].name == "valid"
 
 
-def test_builtin_name_is_skipped(tmp_path):
-    """Entries named 'claude', 'codex', or 'gemini' are rejected."""
+def test_builtin_name_can_override_cli_fallback(tmp_path):
+    """Builtin names may be configured to override the CLI fallback."""
     cfg_path = write_config(tmp_path, [
         {"name": "claude", "base_url": "https://x.com", "model": "m", "api_key": "k"},
     ])
     providers = load_custom_providers(cfg_path)
-    assert providers == []
+    assert len(providers) == 1
+    assert providers[0].name == "claude"
 
 
-def test_builtin_name_case_insensitive(tmp_path):
-    """Builtin name check is case-insensitive (e.g., 'Claude' is also rejected)."""
+def test_builtin_override_preserves_configured_case(tmp_path):
+    """Server-side registration handles builtin names case-insensitively."""
     cfg_path = write_config(tmp_path, [
         {"name": "Claude", "base_url": "https://x.com", "model": "m", "api_key": "k"},
     ])
     providers = load_custom_providers(cfg_path)
-    assert providers == []
+    assert len(providers) == 1
+    assert providers[0].name == "Claude"
 
 
 def test_missing_required_field_is_skipped(tmp_path):
@@ -94,3 +97,35 @@ def test_malformed_json_returns_empty(tmp_path):
     p.write_text("this is not json")
     providers = load_custom_providers(p)
     assert providers == []
+
+
+def test_capabilities_are_normalized(tmp_path):
+    """Optional provider capabilities are normalized for orchestration."""
+    cfg_path = write_config(tmp_path, [
+        {
+            "name": "searchy",
+            "base_url": "https://x.com",
+            "model": "m",
+            "api_key": "k",
+            "capabilities": ["web_search", " Web_Search ", 123, ""],
+        },
+    ])
+    providers = load_custom_providers(cfg_path)
+    assert len(providers) == 1
+    assert providers[0].capabilities == ["web_search"]
+
+
+def test_invalid_capabilities_are_ignored(tmp_path):
+    """Invalid capability declarations degrade to no declared capabilities."""
+    cfg_path = write_config(tmp_path, [
+        {
+            "name": "plain",
+            "base_url": "https://x.com",
+            "model": "m",
+            "api_key": "k",
+            "capabilities": "web_search",
+        },
+    ])
+    providers = load_custom_providers(cfg_path)
+    assert len(providers) == 1
+    assert providers[0].capabilities == []

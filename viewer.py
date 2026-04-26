@@ -13,9 +13,10 @@ import mimetypes
 import sys
 import webbrowser
 from collections import defaultdict
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+import asyncio
 
 HISTORY_BASE = Path.home() / ".mcp-multi-llm" / "history"
 LOGOS_DIR = Path(__file__).parent / "logos"
@@ -211,6 +212,26 @@ body {
   outline: none;
 }
 #search-input:focus { background: #fff; border-color: var(--green); }
+
+#mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+.mode-btn {
+  border: 1px solid #ddd;
+  background: #f7f7f7;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.mode-btn.active {
+  color: #fff;
+  border-color: var(--green);
+  background: var(--green);
+}
 
 #conv-list {
   flex: 1;
@@ -440,6 +461,156 @@ body {
   margin: 4px 0;
 }
 
+/* ── Roundtable workspace ── */
+.roundtable-page {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  padding: 10px 0 32px;
+}
+.roundtable-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.roundtable-panel {
+  background: rgba(255,255,255,0.9);
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 8px;
+  padding: 16px;
+}
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+}
+.field input, .field select, .field textarea {
+  width: 100%;
+  border: 1px solid #d8d8d8;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  outline: none;
+}
+.field textarea {
+  min-height: 190px;
+  resize: vertical;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgba(7,193,96,0.12);
+}
+.inline-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 12px;
+}
+.inline-check input { width: 16px; height: 16px; }
+.primary-btn {
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: var(--green);
+  color: #fff;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.primary-btn:disabled { opacity: .6; cursor: wait; }
+.result-bar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.result-pill {
+  border: 1px solid #e0e0e0;
+  background: #fff;
+  border-radius: 6px;
+  padding: 9px 10px;
+  min-width: 0;
+}
+.result-pill span {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 3px;
+}
+.result-pill strong {
+  font-size: 13px;
+  word-break: break-word;
+}
+.summary-box, .json-box {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
+  font-size: 13px;
+}
+.json-box {
+  max-height: 420px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.result-placeholder {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.chat-page {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  padding: 10px 0 32px;
+}
+.chat-compose-layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.chat-panel {
+  background: rgba(255,255,255,0.9);
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 8px;
+  padding: 16px;
+}
+.secondary-btn {
+  border: 1px solid #d8d8d8;
+  background: #fff;
+  border-radius: 6px;
+  color: #333;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.chat-response-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
 /* Status bar */
 #status-bar {
   padding: 6px 20px;
@@ -452,6 +623,13 @@ body {
   gap: 6px;
   flex-shrink: 0;
 }
+
+@media (max-width: 900px) {
+  #sidebar { width: 230px; }
+  #messages { padding: 14px 18px; }
+  .roundtable-layout { grid-template-columns: 1fr; }
+  .chat-compose-layout { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
@@ -459,6 +637,11 @@ body {
 <div id="sidebar">
   <div id="sidebar-top">
     <h1>Multi-LLM Chat</h1>
+    <div id="mode-switch">
+      <button id="chat-mode-btn" class="mode-btn active" type="button">历史</button>
+      <button id="compose-mode-btn" class="mode-btn" type="button">新对话</button>
+      <button id="roundtable-mode-btn" class="mode-btn" type="button">圆桌</button>
+    </div>
     <select id="project-select"></select>
     <input id="search-input" type="text" placeholder="搜索对话...">
   </div>
@@ -492,6 +675,7 @@ const DEFAULT_COLOR = '#64748b';
 
 let currentProject = '';
 let currentTopic = null;
+let currentMode = 'chat';
 let allConversations = [];
 let lastMsgCount = 0;
 let logoCache = {};  // provider -> url or false
@@ -546,7 +730,273 @@ function formatDateHeader(ts) {
 }
 
 function escapeHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Mode switch ──
+function switchMode(mode) {
+  currentMode = mode;
+  document.getElementById('chat-mode-btn').classList.toggle('active', mode === 'chat');
+  document.getElementById('compose-mode-btn').classList.toggle('active', mode === 'compose');
+  document.getElementById('roundtable-mode-btn').classList.toggle('active', mode === 'roundtable');
+  document.getElementById('conv-list').style.display = mode === 'chat' ? 'block' : 'none';
+  document.getElementById('search-input').style.display = mode === 'chat' ? 'block' : 'none';
+
+  if (mode === 'roundtable') {
+    renderRoundtableWorkspace();
+  } else if (mode === 'compose') {
+    renderComposeWorkspace();
+  } else if (currentTopic) {
+    loadChat(true);
+  } else {
+    document.getElementById('chat-header').style.display = 'none';
+    document.getElementById('messages').innerHTML = '<div id="empty-state"><div class="icon">💬</div><p>选择一个对话开始查看</p></div>';
+  }
+}
+
+document.getElementById('chat-mode-btn').addEventListener('click', () => switchMode('chat'));
+document.getElementById('compose-mode-btn').addEventListener('click', () => switchMode('compose'));
+document.getElementById('roundtable-mode-btn').addEventListener('click', () => switchMode('roundtable'));
+
+function newTopic() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `web-chat-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+async function renderComposeWorkspace() {
+  const header = document.getElementById('chat-header');
+  header.style.display = 'flex';
+  document.getElementById('chat-header-title').textContent = 'New Independent Chat';
+  document.getElementById('chat-header-sub').textContent = '按 topic 隔离上下文，可单独问一个模型';
+  document.getElementById('messages').innerHTML = `
+    <div class="chat-page">
+      <div class="chat-compose-layout">
+        <form id="compose-form" class="chat-panel">
+          <div class="field-grid">
+            <div class="field">
+              <label for="chat-provider">Provider</label>
+              <select id="chat-provider" name="provider">
+                <option value="__group__">group_discuss</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="chat-topic">Topic</label>
+              <input id="chat-topic" name="topic" required>
+            </div>
+          </div>
+          <div class="field">
+            <label for="chat-message">Message</label>
+            <textarea id="chat-message" name="message" required placeholder="输入你想单独问模型的问题..."></textarea>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr auto;gap:8px">
+            <button id="chat-submit" class="primary-btn" type="submit">Send</button>
+            <button id="topic-refresh" class="secondary-btn" type="button">新 topic</button>
+          </div>
+        </form>
+        <div class="chat-panel">
+          <div id="chat-send-result" class="result-placeholder">选择模型，填写 topic 和消息后发送。回复会自动写入左侧历史。</div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('chat-topic').value = newTopic();
+  document.getElementById('topic-refresh').addEventListener('click', () => {
+    document.getElementById('chat-topic').value = newTopic();
+  });
+  document.getElementById('compose-form').addEventListener('submit', submitStandaloneChat);
+  await loadProviderOptions();
+}
+
+async function loadProviderOptions() {
+  try {
+    const response = await fetch('/api/providers');
+    const providers = await response.json();
+    const select = document.getElementById('chat-provider');
+    if (!select) return;
+    const providerOptions = providers.map(p => {
+      const suffix = p.available ? '' : ' unavailable';
+      return `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}${suffix}</option>`;
+    }).join('');
+    select.innerHTML = `<option value="__group__">group_discuss</option>${providerOptions}`;
+  } catch (error) {}
+}
+
+async function submitStandaloneChat(event) {
+  event.preventDefault();
+  const submit = document.getElementById('chat-submit');
+  const resultBox = document.getElementById('chat-send-result');
+  const payload = {
+    provider: document.getElementById('chat-provider').value,
+    topic: document.getElementById('chat-topic').value.trim(),
+    message: document.getElementById('chat-message').value,
+  };
+  submit.disabled = true;
+  submit.textContent = 'Sending...';
+  resultBox.className = 'result-placeholder';
+  resultBox.textContent = '发送中，CLI 模型可能需要一点时间。';
+  try {
+    const response = await fetch('/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    renderStandaloneResult(data);
+    currentTopic = data.topic;
+    await loadConversations();
+  } catch (error) {
+    resultBox.className = 'summary-box';
+    resultBox.textContent = `发送失败：${error.message}`;
+  } finally {
+    submit.disabled = false;
+    submit.textContent = 'Send';
+  }
+}
+
+function renderStandaloneResult(data) {
+  document.getElementById('chat-send-result').className = '';
+  document.getElementById('chat-send-result').innerHTML = `
+    <div class="chat-response-meta">
+      <span>Provider: <strong>${escapeHtml(data.provider)}</strong></span>
+      <span>Topic: <strong>${escapeHtml(data.topic)}</strong></span>
+    </div>
+    <div class="summary-box">${escapeHtml(data.response || '')}</div>
+    <div style="margin-top:10px">
+      <button id="view-sent-history" class="secondary-btn" type="button">查看历史</button>
+    </div>
+  `;
+  document.getElementById('view-sent-history').addEventListener('click', () => {
+    currentTopic = data.topic;
+    switchMode('chat');
+  });
+}
+
+function renderRoundtableWorkspace() {
+  const header = document.getElementById('chat-header');
+  header.style.display = 'flex';
+  document.getElementById('chat-header-title').textContent = 'App Factory Roundtable';
+  document.getElementById('chat-header-sub').textContent = '多模型选题评审';
+  document.getElementById('messages').innerHTML = `
+    <div class="roundtable-page">
+      <div class="roundtable-layout">
+        <form id="roundtable-form" class="roundtable-panel">
+          <div class="field">
+            <label for="rt-app-name">App Name</label>
+            <input id="rt-app-name" name="app_name" required placeholder="Tiny Invoice">
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="rt-app-mode">Mode</label>
+              <select id="rt-app-mode" name="app_mode">
+                <option value="local">local</option>
+                <option value="freeserver">freeserver</option>
+                <option value="paidserver">paidserver</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="rt-keywords">Keywords</label>
+              <input id="rt-keywords" name="keywords" placeholder="invoice tracker, receipt log">
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="rt-min">Min Models</label>
+              <input id="rt-min" name="min_participants" type="number" min="1" max="10" value="2">
+            </div>
+            <div class="field">
+              <label for="rt-max">Max Models</label>
+              <input id="rt-max" name="max_participants" type="number" min="1" max="10" value="5">
+            </div>
+          </div>
+          <label class="inline-check">
+            <input id="rt-force" name="force_health_check" type="checkbox">
+            Force health check
+          </label>
+          <div class="field">
+            <label for="rt-pitch">Pitch</label>
+            <textarea id="rt-pitch" name="pitch" required placeholder="=== PITCH ===&#10;App: ..."></textarea>
+          </div>
+          <div class="field">
+            <label for="rt-data-brief">DATA BRIEF v1</label>
+            <textarea id="rt-data-brief" name="data_brief" required placeholder="=== DATA BRIEF v1 ===&#10;关键词热度..."></textarea>
+          </div>
+          <button id="rt-submit" class="primary-btn" type="submit">Run Roundtable</button>
+        </form>
+        <div class="roundtable-panel">
+          <div id="roundtable-result" class="result-placeholder">等待运行。</div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('roundtable-form').addEventListener('submit', submitRoundtable);
+}
+
+async function submitRoundtable(event) {
+  event.preventDefault();
+  const submit = document.getElementById('rt-submit');
+  const resultBox = document.getElementById('roundtable-result');
+  const keywords = document.getElementById('rt-keywords').value
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  const payload = {
+    app_name: document.getElementById('rt-app-name').value.trim(),
+    app_mode: document.getElementById('rt-app-mode').value,
+    pitch: document.getElementById('rt-pitch').value,
+    data_brief: document.getElementById('rt-data-brief').value,
+    keywords,
+    min_participants: Number(document.getElementById('rt-min').value || 2),
+    max_participants: Number(document.getElementById('rt-max').value || 5),
+    force_health_check: document.getElementById('rt-force').checked,
+  };
+  submit.disabled = true;
+  submit.textContent = 'Running...';
+  resultBox.className = 'result-placeholder';
+  resultBox.textContent = '圆桌评审运行中，CLI 模型可能需要几分钟。';
+  try {
+    const response = await fetch('/api/roundtable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    renderRoundtableResult(data);
+    await loadConversations();
+  } catch (error) {
+    resultBox.className = 'summary-box';
+    resultBox.textContent = `运行失败：${error.message}`;
+  } finally {
+    submit.disabled = false;
+    submit.textContent = 'Run Roundtable';
+  }
+}
+
+function renderRoundtableResult(data) {
+  const participants = Array.isArray(data.participants) ? data.participants : [];
+  const names = participants.map(p => p.provider).join(', ') || '无';
+  document.getElementById('roundtable-result').className = '';
+  document.getElementById('roundtable-result').innerHTML = `
+    <div class="result-bar">
+      <div class="result-pill"><span>Status</span><strong>${escapeHtml(data.status)}</strong></div>
+      <div class="result-pill"><span>Final Gate</span><strong>${escapeHtml(data.final_gate)}</strong></div>
+      <div class="result-pill"><span>Models</span><strong>${escapeHtml(names)}</strong></div>
+    </div>
+    <div class="field">
+      <label>Summary</label>
+      <div class="summary-box">${escapeHtml(data.summary_markdown || '')}</div>
+    </div>
+    <div class="field">
+      <label>JSON</label>
+      <pre class="json-box">${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+    </div>
+  `;
 }
 
 // ── Projects ──
@@ -572,8 +1022,14 @@ document.getElementById('project-select').addEventListener('change', function() 
   currentProject = this.value;
   currentTopic = null;
   lastMsgCount = 0;
-  document.getElementById('chat-header').style.display = 'none';
-  document.getElementById('messages').innerHTML = '<div id="empty-state"><div class="icon">💬</div><p>选择一个对话开始查看</p></div>';
+  if (currentMode === 'roundtable') {
+    renderRoundtableWorkspace();
+  } else if (currentMode === 'compose') {
+    renderComposeWorkspace();
+  } else {
+    document.getElementById('chat-header').style.display = 'none';
+    document.getElementById('messages').innerHTML = '<div id="empty-state"><div class="icon">💬</div><p>选择一个对话开始查看</p></div>';
+  }
   loadConversations();
 });
 
@@ -598,7 +1054,7 @@ function renderConversations() {
   }
 
   list.innerHTML = filtered.map(c => {
-    const isActive = currentTopic === c.topic;
+    const isActive = currentMode === 'chat' && currentTopic === c.topic;
     const isGroup = c.type === 'group';
     let avatarContent;
     if (isGroup) {
@@ -628,6 +1084,7 @@ document.getElementById('search-input').addEventListener('input', renderConversa
 
 // ── Chat view ──
 function selectConv(topic) {
+  if (currentMode !== 'chat') switchMode('chat');
   currentTopic = topic;
   lastMsgCount = 0;
   renderConversations(); // update active state
@@ -635,6 +1092,7 @@ function selectConv(topic) {
 }
 
 async function loadChat(forceScroll) {
+  if (currentMode !== 'chat') return;
   if (!currentTopic || !currentProject) return;
   try {
     const r = await fetch(`/api/chat?project=${encodeURIComponent(currentProject)}&topic=${encodeURIComponent(currentTopic)}`);
@@ -760,6 +1218,115 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def read_json_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ValueError("invalid Content-Length")
+        if length <= 0:
+            raise ValueError("empty request body")
+        if length > 8_000_000:
+            raise ValueError("request body too large")
+        raw = self.rfile.read(length)
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON: {exc}") from exc
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/roundtable":
+            self.handle_roundtable_post()
+            return
+        if path == "/api/send":
+            self.handle_send_post()
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def handle_send_post(self):
+        try:
+            payload = self.read_json_body()
+            if not isinstance(payload, dict):
+                raise ValueError("JSON body must be an object")
+
+            provider = str(payload.get("provider", "")).strip()
+            topic = str(payload.get("topic", "")).strip()
+            message = str(payload.get("message", "")).strip()
+            if not provider or not topic or not message:
+                raise ValueError("provider, topic, and message are required")
+            if "/" in topic or "\\" in topic or ".." in topic:
+                raise ValueError("invalid topic")
+
+            import server as mcp_server
+
+            if provider == "__group__":
+                response = asyncio.run(mcp_server.group_discuss(message=message, topic=topic))
+                provider_label = "group_discuss"
+            else:
+                resolved = mcp_server._resolve_provider_name(provider)
+                if resolved is None:
+                    raise ValueError(f"unknown provider: {provider}")
+                session = mcp_server._all_providers[resolved]
+                response = asyncio.run(session.send(message, topic))
+                provider_label = resolved
+
+            self.send_json({
+                "provider": provider_label,
+                "topic": topic,
+                "response": response,
+            })
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, 500)
+
+    def handle_roundtable_post(self):
+        try:
+            payload = self.read_json_body()
+            if not isinstance(payload, dict):
+                raise ValueError("JSON body must be an object")
+
+            app_name = str(payload.get("app_name", "")).strip()
+            app_mode = str(payload.get("app_mode", "")).strip()
+            pitch = str(payload.get("pitch", "")).strip()
+            data_brief = str(payload.get("data_brief", "")).strip()
+            if not app_name or not app_mode or not pitch or not data_brief:
+                raise ValueError("app_name, app_mode, pitch, and data_brief are required")
+
+            raw_keywords = payload.get("keywords", [])
+            if isinstance(raw_keywords, str):
+                keywords = [k.strip() for k in raw_keywords.split(",") if k.strip()]
+            elif isinstance(raw_keywords, list):
+                keywords = [str(k).strip() for k in raw_keywords if str(k).strip()]
+            else:
+                keywords = []
+
+            min_participants = int(payload.get("min_participants", 2))
+            max_participants = int(payload.get("max_participants", 5))
+            force_health_check = bool(payload.get("force_health_check", False))
+
+            import server as mcp_server
+
+            result = asyncio.run(mcp_server.app_factory_roundtable(
+                app_name=app_name,
+                app_mode=app_mode,
+                pitch=pitch,
+                data_brief=data_brief,
+                keywords=keywords,
+                min_participants=min_participants,
+                max_participants=max_participants,
+                force_health_check=force_health_check,
+            ))
+            self.send_json(result)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, 500)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -767,6 +1334,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ("/", "/index.html"):
             self.send_html(HTML_PAGE)
+
+        elif path == "/api/providers":
+            import server as mcp_server
+            providers = []
+            for name, session in mcp_server._all_providers.items():
+                providers.append({
+                    "name": name,
+                    "available": bool(session.available and name not in mcp_server._dismissed),
+                    "capabilities": sorted(getattr(session, "capabilities", [])),
+                })
+            self.send_json(providers)
 
         elif path == "/api/projects":
             self.send_json(list_projects())
@@ -815,17 +1393,18 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+            return
 
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PORT
     url = f"http://localhost:{port}"
-    print(f"Multi-LLM Chat Viewer  →  {url}")
+    print(f"Multi-LLM Web Console  →  {url}")
     print(f"历史目录: {HISTORY_BASE}")
     print(f"Logo 目录: {LOGOS_DIR}")
     print("Ctrl+C 退出\n")
     webbrowser.open(url)
-    server = HTTPServer(("localhost", port), Handler)
+    server = ThreadingHTTPServer(("localhost", port), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

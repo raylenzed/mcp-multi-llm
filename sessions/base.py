@@ -33,6 +33,7 @@ class BaseSession(ABC):
         self.available = True
         self._cli_not_found: bool = False
         self.language = language
+        self.capabilities: set[str] = set()
 
     def _language_instruction(self) -> str | None:
         """Return a language instruction string, or None if no language is set."""

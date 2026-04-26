@@ -9,6 +9,7 @@ import logging
 import time
 import httpx
 from history.store import HistoryStore, TopicHistory
+from sessions.api_session import http_status_fix_hint, response_error_detail
 from sessions.base import BaseSession, HealthCheckResult
 
 logger = logging.getLogger(__name__)
@@ -101,11 +102,13 @@ class AnthropicCompatSession(BaseSession):
                 return reply
 
             except httpx.HTTPStatusError as e:
+                detail = response_error_detail(e.response)
+                suffix = f": {detail}" if detail else ""
                 if e.response.status_code < 500:
-                    error = f"[{self.provider_name}] HTTP {e.response.status_code}"
+                    error = f"[{self.provider_name}] HTTP {e.response.status_code}{suffix}"
                     logger.error(error)
                     return f"Error: {error}"
-                last_error = f"HTTP {e.response.status_code}"
+                last_error = f"HTTP {e.response.status_code}{suffix}"
                 logger.warning(f"[{self.provider_name}] Server error on attempt {attempt + 1}: {last_error}")
 
             except (httpx.ConnectError, httpx.TimeoutException) as e:
@@ -175,12 +178,16 @@ class AnthropicCompatSession(BaseSession):
             )
         except httpx.HTTPStatusError as e:
             latency_ms = int((time.monotonic() - start) * 1000)
+            detail = response_error_detail(e.response)
+            error = f"HTTP {e.response.status_code}"
+            if detail:
+                error = f"{error}: {detail}"
             return HealthCheckResult(
                 provider=self.provider_name,
                 status="error",
                 latency_ms=latency_ms,
-                error=f"HTTP {e.response.status_code}",
-                fix_hint=None,
+                error=error,
+                fix_hint=http_status_fix_hint(self.provider_name, e.response.status_code),
             )
         except Exception as e:
             return HealthCheckResult(

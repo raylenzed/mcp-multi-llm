@@ -92,6 +92,32 @@ async def test_openai_compat_health_check_auth_error():
     assert not session.available
 
 
+@pytest.mark.asyncio
+async def test_openai_compat_health_check_http_error_includes_body_and_hint():
+    from sessions.openai_compat_session import OpenAICompatSession
+    hs = make_history_store()
+    session = OpenAICompatSession(
+        hs, name="testprovider", base_url="http://localhost:9999",
+        model="missing-model", api_key="key"
+    )
+
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    mock_response.text = '{"error":"model not found"}'
+
+    import httpx
+    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "404", request=MagicMock(), response=mock_response
+    )
+
+    with patch.object(session._client, "post", AsyncMock(return_value=mock_response)):
+        result = await session.health_check()
+
+    assert result.status == "error"
+    assert "model not found" in result.error
+    assert "base_url" in result.fix_hint
+
+
 # --- OpenAICompatSession: send() disables on 401 ---
 
 @pytest.mark.asyncio

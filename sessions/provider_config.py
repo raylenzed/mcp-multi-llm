@@ -21,6 +21,7 @@ class ProviderConfig:
     api_key: str
     protocol: str = "openai"          # "openai" or "anthropic"
     extra_body: dict = field(default_factory=dict)  # merged into request body (openai protocol only)
+    capabilities: list[str] = field(default_factory=list)  # e.g. ["web_search"]
 
 
 def load_custom_providers(path: Path | None = None) -> list[ProviderConfig]:
@@ -36,6 +37,7 @@ def load_custom_providers(path: Path | None = None) -> list[ProviderConfig]:
         api_key (str, required)    — API key
         protocol (str, optional)   — "openai" (default) or "anthropic"
         extra_body (obj, optional) — extra fields merged into the request body (openai only)
+        capabilities (list, optional) — declared abilities such as "web_search"
     """
     if path is None:
         path = _DEFAULT_CONFIG_PATH
@@ -85,6 +87,19 @@ def load_custom_providers(path: Path | None = None) -> list[ProviderConfig]:
             logger.warning(f"[provider_config] Entry {i}: extra_body must be a JSON object — ignoring")
             extra_body = {}
 
+        capabilities = entry.get("capabilities", [])
+        if not isinstance(capabilities, list):
+            logger.warning(f"[provider_config] Entry {i}: capabilities must be a JSON array — ignoring")
+            capabilities = []
+        normalized_capabilities = []
+        for capability in capabilities:
+            if not isinstance(capability, str):
+                logger.warning(f"[provider_config] Entry {i}: non-string capability ignored")
+                continue
+            normalized = capability.strip().lower()
+            if normalized and normalized not in normalized_capabilities:
+                normalized_capabilities.append(normalized)
+
         providers.append(ProviderConfig(
             name=name,
             base_url=base_url,
@@ -92,6 +107,7 @@ def load_custom_providers(path: Path | None = None) -> list[ProviderConfig]:
             api_key=api_key,
             protocol=protocol,
             extra_body=extra_body,
+            capabilities=normalized_capabilities,
         ))
 
     logger.info(f"[provider_config] Loaded {len(providers)} custom provider(s) from {path}")
