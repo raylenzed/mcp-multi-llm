@@ -12,13 +12,52 @@ from sessions.base import BaseSession, CLISession, HealthCheckResult
 
 APP_MODES = {"local", "freeserver", "paidserver"}
 VERDICTS = {"PROCEED", "PIVOT", "KILL"}
-FINAL_GATES = {"PROCEED_TO_EVIDENCE_CARD", "NEEDS_EVIDENCE", "KILL", "SKIPPED"}
+FINAL_GATES = {"PROCEED_TO_EVIDENCE_CARD", "NEEDS_EVIDENCE", "PIVOT", "KILL", "SKIPPED"}
 CONSISTENCY_VALUES = {"CONSISTENT", "CONFLICT", "UNKNOWN"}
+
+# 否决器语义：最终闸门只由分类质疑（challenges）决定，赞成票仅存档。
+# 与 app-factory Challenge Protocol 同一套分类法。
+CHALLENGE_TYPES = ("HARD_DISQUALIFIER", "PIVOTABLE_WEAKNESS", "EVIDENCE_GAP", "SOFT_NEGATIVE")
+_CHALLENGE_ALIASES = {
+    "HARD_DISQUALIFIER": "HARD_DISQUALIFIER",
+    "HARD": "HARD_DISQUALIFIER",
+    "FATAL": "HARD_DISQUALIFIER",
+    "DISQUALIFIER": "HARD_DISQUALIFIER",
+    "PIVOTABLE_WEAKNESS": "PIVOTABLE_WEAKNESS",
+    "PIVOTABLE": "PIVOTABLE_WEAKNESS",
+    "PIVOT": "PIVOTABLE_WEAKNESS",
+    "WEAKNESS": "PIVOTABLE_WEAKNESS",
+    "EVIDENCE_GAP": "EVIDENCE_GAP",
+    "GAP": "EVIDENCE_GAP",
+    "MISSING_EVIDENCE": "EVIDENCE_GAP",
+    "NEEDS_EVIDENCE": "EVIDENCE_GAP",
+    "SOFT_NEGATIVE": "SOFT_NEGATIVE",
+    "SOFT": "SOFT_NEGATIVE",
+    "CONCERN": "SOFT_NEGATIVE",
+}
+
+CALIBRATION_CONTEXT = """Account calibration facts (real shipped-app outcomes; treat as priors):
+- Historical prediction optimism: median 7.35x across 8 shipped apps (predicted vs actual sales).
+- Unanimous panel approval predicted nothing: HiveLog passed 5/5 yet sold 4.7x below forecast; ReefLog passed 4/4, still 3.5x below. Your approval adds ZERO information. Only specific, falsifiable flaws you find add information.
+- Winners: serious-hobby logbooks with niche jargon keywords at $4.99+ (HiveLog, ReefLog). Zero-rating apps reached App Store Top 3 purely via exact title match -- ranking is NOT the bottleneck; keyword search volume is the revenue ceiling.
+- Losers: generic calculators/counters/timers on red-ocean keywords (TileCalc, ProofTime, KnitCount: 0-1 lifetime sales). These categories carry a 10x risk multiplier.
+
+Hard operating constraints (a plan that violates one is a HARD_DISQUALIFIER):
+- Distribution is App Store organic search ONLY. The operator cannot post on Reddit/forums/social media (posts get removed instantly). Any plan that depends on marketing posts is invalid.
+- Zero probe budget: no paid ads, no paid validation per topic. Validation = free tools + shipping itself.
+- Default monetization: free download + one-time IAP unlock ($3.99-$6.99), or paid upfront $2.99-$4.99. Apple net rate 0.85 (Small Business Program)."""
+
+CHALLENGE_SCHEMA_GUIDE = """Challenge types (use exactly these):
+- HARD_DISQUALIFIER: independently checkable fatal fact (Google answers the core need in 3 seconds; a free top app fully covers the core workflow; no exact search phrase a buyer would type; App Review policy blocks the category; backend cost cannot break even; plan requires marketing posts). MUST include cheapest_verification or it will be downgraded.
+- PIVOTABLE_WEAKNESS: real flaw fixable by narrowing the user, scene, or keyword.
+- EVIDENCE_GAP: a load-bearing claim in the pitch/data with no evidence behind it.
+- SOFT_NEGATIVE: taste / market-feel doubts (archived, never blocks)."""
 
 MODE_GUIDANCE = {
     "local": (
-        "Pure local/offline iOS app. No server, no API calls, no subscription. "
-        "One-time purchase $2.99-$4.99. China region may be allowed only if category is safe."
+        "Pure local/offline iOS app. No server, no API calls. "
+        "Default: free download + one-time IAP unlock $3.99-$6.99 (or paid upfront $2.99-$4.99). "
+        "China region may be allowed only if category is safe."
     ),
     "freeserver": (
         "iOS app with Cloudflare free-tier backend. Subscription allowed. "
@@ -196,6 +235,7 @@ def parse_vote(
     concern = ""
     data_consistency: dict[str, str] = {}
     independent_findings: dict[str, Any] = {}
+    challenges: list[dict[str, Any]] = []
 
     if parsed is not None:
         verdict = normalize_verdict(
@@ -225,6 +265,12 @@ def parse_vote(
         raw_findings = parsed.get("independent_findings")
         if isinstance(raw_findings, dict):
             independent_findings = raw_findings
+        raw_challenges = parsed.get("challenges")
+        if isinstance(raw_challenges, list):
+            for item in raw_challenges:
+                normalized = normalize_challenge(item)
+                if normalized:
+                    challenges.append(normalized)
 
     if verdict == "UNKNOWN":
         matches = re.findall(r"\b(PROCEED|PIVOT|KILL)\b", response.upper())
@@ -243,6 +289,19 @@ def parse_vote(
     if not reason:
         reason = _first_nonempty_line(response)
 
+    # 旧格式兜底：KILL 意图不丢失，但无分类硬伤时只折算为"补证据"质疑，
+    # 不允许凭一句话处决（与 skill 层规则一致，现在由 MCP 本身强制）。
+    if not challenges and verdict == "KILL":
+        basis = concern or reason
+        if basis:
+            challenges.append(
+                {"type": "EVIDENCE_GAP", "claim": basis[:500], "cheapest_verification": ""}
+            )
+    elif not challenges and concern:
+        challenges.append(
+            {"type": "SOFT_NEGATIVE", "claim": concern[:500], "cheapest_verification": ""}
+        )
+
     error = None
     stripped = response.strip()
     if stripped.startswith("Error:") or " unavailable " in stripped[:160]:
@@ -253,6 +312,7 @@ def parse_vote(
         "verdict": verdict,
         "reason": reason[:700],
         "biggest_concern": concern[:700],
+        "challenges": challenges,
         "research_capable": research_capable,
         "counted": counted,
         "data_consistency": data_consistency,
@@ -261,6 +321,68 @@ def parse_vote(
         "raw_response": response,
         "error": error,
     }
+
+
+def normalize_challenge(raw: Any) -> dict[str, Any] | None:
+    """把模型输出的质疑统一成 {type, claim, cheapest_verification}。
+
+    护栏：HARD_DISQUALIFIER 必须带 cheapest_verification，否则降级为 EVIDENCE_GAP——
+    不可验证的"硬伤"没有处决权。
+    """
+    if isinstance(raw, str):
+        claim = raw.strip()
+        if not claim:
+            return None
+        return {"type": "SOFT_NEGATIVE", "claim": claim[:500], "cheapest_verification": ""}
+    if not isinstance(raw, dict):
+        return None
+    claim = str(raw.get("claim") or raw.get("description") or raw.get("issue") or "").strip()
+    if not claim:
+        return None
+    raw_type = str(raw.get("type") or raw.get("category") or "").strip().upper().replace(" ", "_")
+    challenge_type = _CHALLENGE_ALIASES.get(raw_type, "SOFT_NEGATIVE")
+    verification = str(
+        raw.get("cheapest_verification") or raw.get("verification") or raw.get("how_to_verify") or ""
+    ).strip()
+    if challenge_type == "HARD_DISQUALIFIER" and not verification:
+        challenge_type = "EVIDENCE_GAP"
+    return {
+        "type": challenge_type,
+        "claim": claim[:500],
+        "cheapest_verification": verification[:300],
+    }
+
+
+def _claim_tokens(text: str) -> set[str]:
+    return set(re.sub(r"[^a-z0-9一-鿿]+", " ", text.lower()).split())
+
+
+def dedupe_challenges(votes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """跨模型合并同义质疑：5 个模型说同一句话 = 1 条质疑（相关评委去相关）。"""
+    type_order = {name: index for index, name in enumerate(CHALLENGE_TYPES)}
+    ledger: list[dict[str, Any]] = []
+    for vote in votes:
+        if not vote.get("counted"):
+            continue
+        for challenge in vote.get("challenges", []):
+            tokens = _claim_tokens(challenge["claim"])
+            merged = False
+            for entry in ledger:
+                if entry["type"] != challenge["type"]:
+                    continue
+                entry_tokens = _claim_tokens(entry["claim"])
+                union = tokens | entry_tokens
+                if union and len(tokens & entry_tokens) / len(union) >= 0.55:
+                    if vote["provider"] not in entry["sources"]:
+                        entry["sources"].append(vote["provider"])
+                    if not entry["cheapest_verification"] and challenge["cheapest_verification"]:
+                        entry["cheapest_verification"] = challenge["cheapest_verification"]
+                    merged = True
+                    break
+            if not merged:
+                ledger.append({**challenge, "sources": [vote["provider"]]})
+    ledger.sort(key=lambda entry: (type_order.get(entry["type"], 9), -len(entry["sources"])))
+    return ledger
 
 
 def aggregate_comparison(votes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -301,27 +423,37 @@ def aggregate_final_gate(
     round1_votes: list[dict[str, Any]],
     round2_votes: list[dict[str, Any]],
     comparison: dict[str, Any] | None = None,
+    challenge_ledger: list[dict[str, Any]] | None = None,
 ) -> str:
+    """否决器语义：闸门只由分类质疑决定，PROCEED 票数不计入任何信号。
+
+    校准依据：全票通过从未预测成功（HiveLog 5/5 PASS 仍乐观 4.7×），
+    但单条可验证硬伤是真信号——共识无信息量，缺陷有。
+    """
     counted_r1 = [vote for vote in round1_votes if vote.get("counted")]
     counted_r2 = [vote for vote in round2_votes if vote.get("counted")]
     if not counted_r1:
         return "SKIPPED"
 
-    if any(vote.get("verdict") == "KILL" for vote in counted_r1 + counted_r2):
-        return "KILL"
+    ledger = (
+        challenge_ledger
+        if challenge_ledger is not None
+        else dedupe_challenges(counted_r1 + counted_r2)
+    )
+    types = {entry["type"] for entry in ledger}
 
+    if "HARD_DISQUALIFIER" in types:
+        return "KILL"
     if not counted_r2:
         return "NEEDS_EVIDENCE"
-
-    required_r1 = min(2, len(counted_r1))
-    required_r2 = min(2, len(counted_r2))
-    r1_proceed = sum(1 for vote in counted_r1 if vote.get("verdict") == "PROCEED")
-    r2_proceed = sum(1 for vote in counted_r2 if vote.get("verdict") == "PROCEED")
-    has_conflict = bool(comparison and comparison.get("has_conflict"))
-
-    if r1_proceed >= required_r1 and r2_proceed >= required_r2 and not has_conflict:
-        return "PROCEED_TO_EVIDENCE_CARD"
-    return "NEEDS_EVIDENCE"
+    if comparison and comparison.get("has_conflict"):
+        return "NEEDS_EVIDENCE"
+    if "PIVOTABLE_WEAKNESS" in types:
+        return "PIVOT"
+    if "EVIDENCE_GAP" in types:
+        return "NEEDS_EVIDENCE"
+    # 反方未找到硬伤；SOFT_NEGATIVE 只存档不拦路。这不构成需求证据。
+    return "PROCEED_TO_EVIDENCE_CARD"
 
 
 async def run_app_factory_roundtable(
@@ -374,7 +506,14 @@ async def run_app_factory_roundtable(
     r2_final: list[dict[str, Any]] = []
     comparison = aggregate_comparison([])
 
-    if any(vote.get("verdict") == "KILL" for vote in r1_final if vote.get("counted")):
+    r1_hard = any(
+        challenge.get("type") == "HARD_DISQUALIFIER"
+        for vote in r1_final
+        if vote.get("counted")
+        for challenge in vote.get("challenges", [])
+    )
+    if r1_hard:
+        challenge_ledger = dedupe_challenges(r1_final)
         final_gate = "KILL"
     else:
         research_participants = [p for p in participants if p.research_capable]
@@ -402,7 +541,10 @@ async def run_app_factory_roundtable(
             )
             r2_final = _prefer_parsed_votes(r2_discussion, r2_initial)
         comparison = aggregate_comparison(r2_final or r2_initial)
-        final_gate = aggregate_final_gate(r1_final, r2_final or r2_initial, comparison)
+        challenge_ledger = dedupe_challenges(r1_final + (r2_final or r2_initial))
+        final_gate = aggregate_final_gate(
+            r1_final, r2_final or r2_initial, comparison, challenge_ledger
+        )
 
     second_round_names = {
         vote["provider"]
@@ -414,7 +556,16 @@ async def run_app_factory_roundtable(
         for participant in participants
     ]
     status = _status(participants, min_participants, r1_final, r2_final or r2_initial, final_gate)
-    summary = _summary_markdown(app_name, status, participant_rows, r1_final, r2_final or r2_initial, comparison, final_gate)
+    summary = _summary_markdown(
+        app_name,
+        status,
+        participant_rows,
+        r1_final,
+        r2_final or r2_initial,
+        comparison,
+        final_gate,
+        challenge_ledger,
+    )
 
     return {
         "status": status,
@@ -435,6 +586,7 @@ async def run_app_factory_roundtable(
             },
         },
         "comparison": comparison,
+        "challenge_ledger": challenge_ledger,
         "final_gate": final_gate if final_gate in FINAL_GATES else "NEEDS_EVIDENCE",
         "summary_markdown": summary,
     }
@@ -487,20 +639,39 @@ def _prefer_parsed_votes(
 
 
 def _round1_prompt(app_name: str, app_mode: str, pitch: str, data_brief: str) -> str:
-    return f"""You are an Indie App Factory evaluator.
+    return f"""You are an adversarial reviewer in an Indie App Factory red-team. Your job is to find specific, falsifiable flaws -- NOT to judge whether the idea "sounds good". Approval carries zero weight in the gate; only classified challenges do.
 
 Context:
 - App: {app_name}
 - Mode: {app_mode}
 - Constraints: {MODE_GUIDANCE[app_mode]}
 - Goal: $300-$1500/year net. Break-even is small but real. This is not a VC startup.
-- PROCEED only means worth continuing to evidence-card review. Never output BUILD_READY.
+- PROCEED only means "I could not find a disqualifying flaw". Never output BUILD_READY.
 
-Evaluate the pitch and the real local tool data. Return ONLY one JSON object:
+{CALIBRATION_CONTEXT}
+
+{CHALLENGE_SCHEMA_GUIDE}
+
+Falsification checklist -- attempt every line against the pitch and the data:
+1. Google-3-seconds: does a plain search fully answer the core need?
+2. Free coverage: does a free top competitor already cover the core workflow?
+3. Search entry: is there an exact phrase a buyer types? Is its Top-10 beatable (weak titles / <100 ratings / stale apps)?
+4. Repeat use: what does the user concretely lose in week 2 if they stop using it?
+5. Demand math: divide the pitch's estimate by the 7.35x optimism prior (10x for calculator/counter/timer) -- does it still break even?
+6. Compliance / App Review category risk. For server modes: is the backend truly necessary and affordable?
+
+Return ONLY one JSON object:
 {{
   "verdict": "PROCEED|PIVOT|KILL",
-  "reason": "one-line reason",
+  "reason": "one-line reason (archived only, not a gate signal)",
   "biggest_concern": "one sentence",
+  "challenges": [
+    {{
+      "type": "HARD_DISQUALIFIER|PIVOTABLE_WEAKNESS|EVIDENCE_GAP|SOFT_NEGATIVE",
+      "claim": "specific falsifiable statement -- name the exact keyword/competitor/policy",
+      "cheapest_verification": "one $0 action that proves or kills this claim"
+    }}
+  ],
   "field_ratings": {{
     "data_quality": "SOLID|WEAK|FATAL",
     "pain": "SOLID|WEAK|FATAL",
@@ -509,6 +680,8 @@ Evaluate the pitch and the real local tool data. Return ONLY one JSON object:
     "break_even": "SOLID|WEAK|FATAL"
   }}
 }}
+
+An empty challenges list asserts the topic survived every checklist line. Vague doubts ("competitive market", "demand unclear") belong in SOFT_NEGATIVE or EVIDENCE_GAP, never in HARD_DISQUALIFIER.
 
 === PITCH ===
 {pitch}
@@ -522,28 +695,39 @@ Evaluate the pitch and the real local tool data. Return ONLY one JSON object:
 
 def _round2_prompt(app_name: str, app_mode: str, pitch: str, keywords: list[str]) -> str:
     keyword_text = ", ".join(keywords) if keywords else "(infer likely App Store keywords from the pitch)"
-    return f"""You are an Indie App Factory evaluator with independent research responsibility.
+    return f"""You are an adversarial reviewer with independent research responsibility in an Indie App Factory red-team. Verify with your own tools; your approval carries zero weight -- only classified, falsifiable challenges do.
 
 Context:
 - App: {app_name}
 - Mode: {app_mode}
 - Constraints: {MODE_GUIDANCE[app_mode]}
 - Goal: $300-$1500/year net. Break-even is small but real. This is not a VC startup.
-- Use your native web search/browsing tools before evaluating if your runtime provides them.
+- Use your native web search/browsing tools before judging if your runtime provides them.
 - Research keywords: {keyword_text}
-- Do not use prior round conclusions. Do not output BUILD_READY.
+- Do not rely on prior round conclusions. Never output BUILD_READY.
 
-Research before judging:
-1. App Store competitors: top results, ratings, review counts, pricing.
-2. Keyword demand: signs of real search intent or weak demand.
-3. Pain evidence: Reddit/forums/reviews showing users struggle with this problem.
-4. Paid evidence: paid competitors, paid templates, or clear professional willingness to pay.
+{CALIBRATION_CONTEXT}
+
+{CHALLENGE_SCHEMA_GUIDE}
+
+Research to attempt before judging (each line is a chance to find a challenge):
+1. App Store competitors for the keywords: titles, rating counts, pricing, staleness. Does a free app already own the exact phrase?
+2. Keyword demand: any sign buyers actually type these phrases? If the only strong phrases are red-ocean, that is a challenge.
+3. Pain evidence: forums/reviews showing real workarounds -- or their absence.
+4. Paid evidence: paid competitors, paid templates, professional willingness to pay.
 
 Then return ONLY one JSON object:
 {{
   "verdict": "PROCEED|PIVOT|KILL",
-  "reason": "one-line reason",
+  "reason": "one-line reason (archived only, not a gate signal)",
   "biggest_concern": "one sentence",
+  "challenges": [
+    {{
+      "type": "HARD_DISQUALIFIER|PIVOTABLE_WEAKNESS|EVIDENCE_GAP|SOFT_NEGATIVE",
+      "claim": "specific falsifiable statement backed by what you found",
+      "cheapest_verification": "one $0 action that proves or kills this claim"
+    }}
+  ],
   "independent_findings": {{
     "competitors": "what you found",
     "keyword_demand": "what you found",
@@ -573,19 +757,32 @@ def _discussion_prompt(
     data_summary: str,
     vote_summary: str,
 ) -> str:
-    return f"""You are in an App Factory roundtable discussion.
+    return f"""You are in an App Factory red-team roundtable discussion.
 
 App: {app_name}
 Mode: {app_mode}
 Round: {round_name}
 Constraints: {MODE_GUIDANCE[app_mode]}
 
-Review the pitch, data, and other votes. Cast your final vote for this round.
+Review the pitch, data, and the other reviewers' challenges. Your job is NOT to converge with the group -- it is to stress-test the surviving claims:
+- Escalate a challenge (with a concrete cheapest_verification) if others under-rated it.
+- Withdraw or downgrade your own challenge if the data refutes it.
+- Add any flaw everyone missed. Duplicate challenges are merged across reviewers, so repeating others adds nothing.
+
+{CHALLENGE_SCHEMA_GUIDE}
+
 Return ONLY one JSON object:
 {{
   "verdict": "PROCEED|PIVOT|KILL",
-  "reason": "one-line reason",
+  "reason": "one-line reason (archived only, not a gate signal)",
   "biggest_concern": "one sentence",
+  "challenges": [
+    {{
+      "type": "HARD_DISQUALIFIER|PIVOTABLE_WEAKNESS|EVIDENCE_GAP|SOFT_NEGATIVE",
+      "claim": "specific falsifiable statement",
+      "cheapest_verification": "one $0 action that proves or kills this claim"
+    }}
+  ],
   "data_consistency": {{
     "competitors": "CONSISTENT|CONFLICT|UNKNOWN",
     "keyword_demand": "CONSISTENT|CONFLICT|UNKNOWN",
@@ -601,9 +798,9 @@ Return ONLY one JSON object:
 {data_summary}
 === END DATA / FINDINGS SUMMARY ===
 
-=== VOTE SUMMARY ===
+=== CHALLENGES / VOTES SO FAR ===
 {vote_summary}
-=== END VOTE SUMMARY ===
+=== END CHALLENGES / VOTES SO FAR ===
 """
 
 
@@ -619,6 +816,11 @@ def _votes_summary(votes: list[dict[str, Any]]) -> str:
         findings = vote.get("independent_findings")
         if findings:
             line += f" Findings: {json.dumps(findings, ensure_ascii=False)[:900]}"
+        for challenge in (vote.get("challenges") or [])[:4]:
+            line += (
+                f"\n  * [{challenge['type']}] {challenge['claim']}"
+                + (f" (verify: {challenge['cheapest_verification']})" if challenge.get("cheapest_verification") else "")
+            )
         lines.append(line)
     return "\n".join(lines)
 
@@ -631,23 +833,34 @@ def _summary_markdown(
     round2_votes: list[dict[str, Any]],
     comparison: dict[str, Any],
     final_gate: str,
+    challenge_ledger: list[dict[str, Any]] | None = None,
 ) -> str:
     lines = [
-        f"### 多模型圆桌评审：{app_name}",
+        f"### 多模型圆桌评审（否决器模式）：{app_name}",
         "",
         f"- 状态：`{status}`",
         f"- 最终闸门：`{final_gate}`",
         f"- 参与模型：{', '.join(p['provider'] for p in participants) or '无'}",
         "",
-        "第一轮（本地工具数据）：",
+        "质疑账本（跨模型去重；唯一的闸门信号）：",
     ]
+    if challenge_ledger:
+        for entry in challenge_ledger:
+            line = f"- [{entry['type']}] {entry['claim']}（来源：{', '.join(entry['sources'])}）"
+            if entry.get("cheapest_verification"):
+                line += f"｜验证：{entry['cheapest_verification']}"
+            lines.append(line)
+    else:
+        lines.append("- 反方未提出可分类的质疑。")
+    lines.append("")
+    lines.append("第一轮投票（仅存档，不构成证据——共识无信息量）：")
     lines.extend(_summary_vote_lines(round1_votes))
     lines.append("")
-    lines.append("第二轮（模型独立自采）：")
+    lines.append("第二轮投票（仅存档，不构成证据）：")
     if round2_votes:
         lines.extend(_summary_vote_lines(round2_votes))
     else:
-        lines.append("- 未执行：没有可计入独立自采的模型，或第一轮已 KILL。")
+        lines.append("- 未执行：没有可计入独立自采的模型，或第一轮已出现硬伤。")
     lines.append("")
     lines.append("数据一致性：")
     for metric, value in comparison.get("metrics", {}).items():
@@ -668,12 +881,20 @@ def _summary_vote_lines(votes: list[dict[str, Any]]) -> list[str]:
 
 def _gate_explanation(final_gate: str) -> str:
     if final_gate == "PROCEED_TO_EVIDENCE_CARD":
-        return "结论：可以进入证据卡与最终风控；这不是 BUILD_READY。"
+        return (
+            "结论：反方未找到硬伤 → 可进入证据卡与最终风控。"
+            "注意：这不构成需求证据，更不是 BUILD_READY；需求只由证据包 + 校准账本判定。"
+        )
+    if final_gate == "PIVOT":
+        return "结论：存在可修复弱点（PIVOTABLE_WEAKNESS），限一次缩窄人群/场景/关键词后重评。"
     if final_gate == "KILL":
-        return "结论：圆桌出现明确 KILL，应立即换题。"
+        return (
+            "结论：出现可验证的 HARD_DISQUALIFIER。"
+            "先执行质疑账本中的 cheapest_verification 复核，确认后立即换题、回候选池递补。"
+        )
     if final_gate == "SKIPPED":
         return "结论：多模型评审未执行，按 skill 降级规则继续。"
-    return "结论：证据或一致性不足，需要补证据、调整假设或重跑评审。"
+    return "结论：存在 EVIDENCE_GAP 或数据冲突，限一次补证据后重评；仍弱则 KILL_SOFT。"
 
 
 def _status(
@@ -697,7 +918,7 @@ def _status(
 
 def _round2_skip_reason(participants: list[Participant], final_gate: str) -> str:
     if final_gate == "KILL":
-        return "First round produced KILL, so independent research was not needed."
+        return "First round produced a verifiable HARD_DISQUALIFIER, so independent research was not needed."
     if not any(participant.research_capable for participant in participants):
         return "No selected provider has CLI/native web search or declared web_search capability."
     return "Second round did not produce counted votes."
@@ -719,6 +940,7 @@ def _skipped_result(app_name: str, reason: str) -> dict[str, Any]:
             "round2_independent_research": {"initial_votes": [], "discussion_votes": [], "final_votes": [], "skipped_reason": reason},
         },
         "comparison": aggregate_comparison([]),
+        "challenge_ledger": [],
         "final_gate": "SKIPPED",
         "summary_markdown": summary,
     }

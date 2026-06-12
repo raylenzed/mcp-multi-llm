@@ -278,7 +278,13 @@ async def app_factory_roundtable(
     max_participants: int = 5,
     force_health_check: bool = False,
 ) -> dict:
-    """Run a two-round App Factory market review with multiple LLM providers.
+    """Run a two-round adversarial App Factory review (veto engine, not approval engine).
+
+    The final gate is computed ONLY from classified, falsifiable challenges
+    (HARD_DISQUALIFIER / PIVOTABLE_WEAKNESS / EVIDENCE_GAP / SOFT_NEGATIVE);
+    approval votes are archived and carry zero signal. Same-meaning challenges
+    are deduplicated across models (correlated judges count once). The returned
+    `challenge_ledger` feeds the skill's Challenge Ledger directly.
 
     Args:
         app_name: Candidate app name.
