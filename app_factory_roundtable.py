@@ -354,7 +354,14 @@ def normalize_challenge(raw: Any) -> dict[str, Any] | None:
 
 
 def _claim_tokens(text: str) -> set[str]:
-    return set(re.sub(r"[^a-z0-9一-鿿]+", " ", text.lower()).split())
+    """英文/数字按词切分；中文没有空格，按相邻两字（bigram）切分，否则整句成一个 token、去重失效。"""
+    tokens: set[str] = set()
+    for run in re.findall(r"[a-z0-9]+|[一-鿿]+", text.lower()):
+        if run[0] < "一" or len(run) == 1:
+            tokens.add(run)
+        else:
+            tokens.update(run[i:i + 2] for i in range(len(run) - 1))
+    return tokens
 
 
 def dedupe_challenges(votes: list[dict[str, Any]]) -> list[dict[str, Any]]:

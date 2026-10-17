@@ -6,6 +6,7 @@ import pytest
 
 from app_factory_roundtable import (
     aggregate_final_gate,
+    _claim_tokens,
     dedupe_challenges,
     normalize_challenge,
     parse_vote,
@@ -159,6 +160,21 @@ def test_dedupe_merges_same_claim_across_models():
     assert len(ledger) == 2
     merged = next(entry for entry in ledger if entry["type"] == "EVIDENCE_GAP")
     assert set(merged["sources"]) == {"a", "b"}
+
+
+def test_dedupe_merges_same_chinese_claim_across_models():
+    votes = [
+        vote_with([challenge("EVIDENCE_GAP", "没有证据表明德国用户会搜索蜂箱记录")], provider="a"),
+        vote_with([challenge("EVIDENCE_GAP", "没有证据表明德国用户真的会搜索蜂箱记录这个词")], provider="b"),
+        vote_with([challenge("EVIDENCE_GAP", "定价高于竞品三倍缺少依据")], provider="c"),
+    ]
+    ledger = dedupe_challenges(votes)
+    assert len(ledger) == 2
+    assert {"a", "b"} in [set(entry["sources"]) for entry in ledger]
+
+
+def test_claim_tokens_split_chinese_into_bigrams():
+    assert _claim_tokens("谷歌三秒 app") == {"谷歌", "歌三", "三秒", "app"}
 
 
 def test_gate_ignores_proceed_votes_requires_second_round():
