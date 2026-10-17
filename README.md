@@ -235,6 +235,7 @@ For providers that implement the Anthropic `/v1/messages` API format:
 | `protocol` | — | `"openai"`（默认）或 `"anthropic"` |
 | `extra_body` | — | 合并进请求 body 的额外字段（仅 openai 协议有效） |
 | `capabilities` | — | 声明 provider 能力，例如 `["web_search"]`；用于 App Factory 第二轮独立自采 |
+| `web_search` | — | 客户端联网搜索：预设名 `"deepseek"` / `"kimi"`，或对象（见下方"联网搜索"）；设置后自动声明 `web_search` 能力（仅 openai 协议） |
 
 重启 MCP 服务后，每个模型会自动注册为独立工具：`discuss_with_gemini`、`discuss_with_deepseek`…
 
@@ -254,6 +255,42 @@ For providers that implement the Anthropic `/v1/messages` API format:
 
 Claude/Codex/Gemini 等 CLI provider 默认视为可自采；普通 HTTP API provider 默认只参与评审，不计入独立搜索证据。
 
+### 联网搜索 / Web search
+
+API 模型有两种联网方式，配置好后都会计入 `app_factory_roundtable` 第二轮独立自采：
+
+**1. 客户端搜索循环（`web_search` 字段）**：搜索是单独的 REST API 的厂商（DeepSeek、Kimi）。服务向模型提供一个 `web_search` 函数工具，模型发起调用时由服务请求搜索 API，再把结果作为 tool 消息喂回模型，直到模型给出最终回答（默认最多 6 次搜索）。
+
+```json
+[
+  {"name": "deepseek", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat",
+   "api_key": "your-key", "web_search": "deepseek"},
+  {"name": "kimi", "base_url": "https://api.moonshot.cn/v1", "model": "kimi-k3",
+   "api_key": "your-key", "web_search": "kimi"},
+  {"name": "glm", "base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-5.3",
+   "api_key": "your-key", "web_search": {"preset": "deepseek", "api_key_from": "deepseek"}}
+]
+```
+
+| `web_search` 对象字段 | 说明 |
+|------|------|
+| `preset` | `deepseek`（`/v1/tools/search`，字段 `query` → `results`）或 `kimi`（`/v1/tools/search`，字段 `text_query` → `search_results`） |
+| `endpoint` / `query_field` / `results_field` | 不用预设时自定义搜索 API（必须 https） |
+| `count` | 每次搜索返回条数，默认 5 |
+| `max_searches` | 单次回答最多搜索次数，默认 6；用完后不再提供工具，模型必须作答 |
+| `api_key` / `api_key_from` | 搜索 API 用的 Key；默认用本条目的 `api_key`，`api_key_from` 引用另一条目的 Key（例如 GLM 借用 DeepSeek 搜索） |
+
+> Kimi 内置的 `$web_search`（`builtin_function`）官方已宣布于 2026-10-20 下线，这里用的是官方替代的 `/v1/tools/search`。
+
+**2. 服务端内置搜索（`extra_body` + `capabilities`）**：请求里加一个开关、由厂商服务端代搜的（如千问），用 `extra_body` 打开，并手动声明能力：
+
+```json
+{"name": "qwen", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "model": "qwen3.8-max",
+ "api_key": "your-key", "capabilities": ["web_search"],
+ "extra_body": {"enable_search": true, "search_options": {"forced_search": true, "search_strategy": "max"}}}
+```
+
+实测（2026-10，问题需要查 App Store 实时页面）：千问只有 `forced_search` + `max` 能稳定搜到，单次约 100–150 秒；智谱内置的 `web_search` 工具四种引擎均未搜到目标 App，因此 GLM 改走客户端循环 + DeepSeek 搜索。
 
 ### Common providers / 常用 provider 参考
 

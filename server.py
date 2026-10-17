@@ -81,6 +81,7 @@ def _session_from_cfg(cfg) -> BaseSession:
             api_key=cfg.api_key,
             extra_body=cfg.extra_body,
             language=_LANGUAGE,
+            web_search=cfg.web_search,
         )
     session.capabilities = set(cfg.capabilities)
     return session

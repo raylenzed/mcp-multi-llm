@@ -7,6 +7,7 @@ import httpx
 from history.store import HistoryStore, TopicHistory
 from sessions.api_session import APISession, http_status_fix_hint, response_error_detail
 from sessions.base import HealthCheckResult
+from sessions.web_search import SEARCH_TOOL, run_search
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,14 @@ class OpenAICompatSession(APISession):
         api_key: str,
         extra_body: dict | None = None,
         language: str | None = None,
+        web_search: dict | None = None,
     ):
         super().__init__(history_store, base_url=base_url, api_key=api_key, language=language)
         self.provider_name = name
         self.model = model
         self.extra_body = extra_body or {}
+        # Client-side search config (see sessions/web_search.py); None = no search loop.
+        self.web_search = web_search
 
     def _build_messages(self, history: TopicHistory) -> list[dict]:
         """Build OpenAI-format messages array from history (includes current message)."""
@@ -49,10 +53,52 @@ class OpenAICompatSession(APISession):
         history.add("user", message)
 
         messages = self._build_messages(history)
-        body = {"model": self.model, "messages": messages}
-        if self.extra_body:
-            body.update(self.extra_body)
+        reply = await self._complete(messages, timeout)
+        if reply.startswith("Error:"):
+            return reply
 
+        history.add("assistant", reply)
+        self.history_store.save(self.provider_name, topic)
+        return reply
+
+    async def _complete(self, messages: list[dict], timeout: int) -> str:
+        """Get the final reply, running client-side searches the model asks for."""
+        max_searches = self.web_search["max_searches"] if self.web_search else 0
+        searches = 0
+        while True:
+            body = {"model": self.model, "messages": messages}
+            if self.extra_body:
+                body.update(self.extra_body)
+            if self.web_search and searches < max_searches:
+                body["tools"] = [SEARCH_TOOL]
+
+            data = await self._post_chat(body, timeout)
+            if isinstance(data, str):
+                return data
+
+            try:
+                message = data["choices"][0]["message"]
+            except (KeyError, IndexError, TypeError):
+                return f"Error: [{self.provider_name}] Unexpected response: {str(data)[:300]}"
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls or "tools" not in body:
+                return message.get("content") or ""
+
+            # Echo the assistant turn back unchanged (it may carry reasoning_content).
+            messages.append(message)
+            for call in tool_calls:
+                searches += 1
+                result = await run_search(self._client, self.web_search, call["function"].get("arguments", ""))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.get("id", ""),
+                    "name": call["function"].get("name", ""),
+                    "content": result,
+                })
+            logger.info(f"[{self.provider_name}] {searches} web search(es) so far")
+
+    async def _post_chat(self, body: dict, timeout: int) -> dict | str:
+        """POST /chat/completions with retries; returns the JSON body or an 'Error: ...' string."""
         logger.info(f"[{self.provider_name}] POST /chat/completions model={self.model}")
 
         last_error: str = ""
@@ -78,12 +124,7 @@ class OpenAICompatSession(APISession):
                     return f"Error: [{self.provider_name}] Rate limited. Retry-After: {retry_after}s"
 
                 response.raise_for_status()
-                data = response.json()
-                reply = data["choices"][0]["message"]["content"]
-
-                history.add("assistant", reply)
-                self.history_store.save(self.provider_name, topic)
-                return reply
+                return response.json()
 
             except httpx.HTTPStatusError as e:
                 detail = response_error_detail(e.response)

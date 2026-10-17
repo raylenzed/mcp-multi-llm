@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sessions.web_search import resolve_web_search
+
 logger = logging.getLogger(__name__)
 
 _VALID_PROTOCOLS = {"openai", "anthropic"}
@@ -22,6 +24,7 @@ class ProviderConfig:
     protocol: str = "openai"          # "openai" or "anthropic"
     extra_body: dict = field(default_factory=dict)  # merged into request body (openai protocol only)
     capabilities: list[str] = field(default_factory=list)  # e.g. ["web_search"]
+    web_search: dict | None = None    # client-side search loop config (openai protocol only)
 
 
 def load_custom_providers(path: Path | None = None) -> list[ProviderConfig]:
@@ -38,6 +41,8 @@ def load_custom_providers(path: Path | None = None) -> list[ProviderConfig]:
         protocol (str, optional)   — "openai" (default) or "anthropic"
         extra_body (obj, optional) — extra fields merged into the request body (openai only)
         capabilities (list, optional) — declared abilities such as "web_search"
+        web_search (str|obj, optional) — client-side search: a preset ("deepseek", "kimi")
+                                         or {"preset"?, "endpoint", "query_field", ...}
     """
     if path is None:
         path = _DEFAULT_CONFIG_PATH
@@ -100,6 +105,17 @@ def load_custom_providers(path: Path | None = None) -> list[ProviderConfig]:
             if normalized and normalized not in normalized_capabilities:
                 normalized_capabilities.append(normalized)
 
+        web_search = None
+        if "web_search" in entry:
+            if protocol != "openai":
+                logger.warning(f"[provider_config] Entry {i}: web_search needs the openai protocol — ignoring")
+            else:
+                web_search = resolve_web_search(entry["web_search"])
+                if web_search is None:
+                    logger.warning(f"[provider_config] Entry {i}: invalid web_search — ignoring")
+                elif "web_search" not in normalized_capabilities:
+                    normalized_capabilities.append("web_search")
+
         providers.append(ProviderConfig(
             name=name,
             base_url=base_url,
@@ -108,7 +124,22 @@ def load_custom_providers(path: Path | None = None) -> list[ProviderConfig]:
             protocol=protocol,
             extra_body=extra_body,
             capabilities=normalized_capabilities,
+            web_search=web_search,
         ))
+
+    # web_search.api_key_from: reuse another entry's key for the search API
+    # (e.g. GLM chatting through DeepSeek's search) instead of copying the key.
+    keys = {p.name.lower(): p.api_key for p in providers}
+    for p in providers:
+        source = (p.web_search or {}).pop("api_key_from", None)
+        if source is None:
+            continue
+        if str(source).lower() in keys:
+            p.web_search["api_key"] = keys[str(source).lower()]
+        else:
+            logger.warning(f"[provider_config] {p.name}: web_search.api_key_from '{source}' not found — ignoring web_search")
+            p.web_search = None
+            p.capabilities.remove("web_search")
 
     logger.info(f"[provider_config] Loaded {len(providers)} custom provider(s) from {path}")
     return providers

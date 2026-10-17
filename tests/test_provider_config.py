@@ -129,3 +129,49 @@ def test_invalid_capabilities_are_ignored(tmp_path):
     providers = load_custom_providers(cfg_path)
     assert len(providers) == 1
     assert providers[0].capabilities == []
+
+
+def test_web_search_preset_enables_capability(tmp_path):
+    """A web_search preset resolves to a full config and implies the web_search capability."""
+    cfg_path = write_config(tmp_path, [
+        {"name": "deepseek", "base_url": "https://api.deepseek.com/v1",
+         "model": "deepseek-chat", "api_key": "sk-1", "web_search": "deepseek"},
+        {"name": "kimi", "base_url": "https://api.moonshot.cn/v1",
+         "model": "kimi-k3", "api_key": "sk-2", "web_search": {"preset": "kimi", "count": 3}},
+    ])
+    deepseek, kimi = load_custom_providers(cfg_path)
+    assert deepseek.web_search["endpoint"] == "https://api.deepseek.com/v1/tools/search"
+    assert deepseek.web_search["query_field"] == "query"
+    assert deepseek.capabilities == ["web_search"]
+    assert kimi.web_search["query_field"] == "text_query"
+    assert kimi.web_search["count"] == 3
+
+
+def test_invalid_web_search_is_ignored(tmp_path):
+    """Unknown presets and non-openai protocols do not enable search."""
+    cfg_path = write_config(tmp_path, [
+        {"name": "a", "base_url": "https://x.com", "model": "m", "api_key": "k", "web_search": "nope"},
+        {"name": "b", "base_url": "https://x.com", "model": "m", "api_key": "k",
+         "protocol": "anthropic", "web_search": "deepseek"},
+        {"name": "c", "base_url": "https://x.com", "model": "m", "api_key": "k",
+         "web_search": {"endpoint": "http://insecure.example/search"}},
+    ])
+    for provider in load_custom_providers(cfg_path):
+        assert provider.web_search is None
+        assert provider.capabilities == []
+
+
+def test_web_search_api_key_from_reuses_other_entry_key(tmp_path):
+    """api_key_from points the search API at another provider's key."""
+    cfg_path = write_config(tmp_path, [
+        {"name": "deepseek", "base_url": "https://api.deepseek.com/v1", "model": "m", "api_key": "sk-ds"},
+        {"name": "glm", "base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "m", "api_key": "sk-glm",
+         "web_search": {"preset": "deepseek", "api_key_from": "DeepSeek"}},
+        {"name": "lost", "base_url": "https://x.com", "model": "m", "api_key": "k",
+         "web_search": {"preset": "deepseek", "api_key_from": "missing"}},
+    ])
+    _, glm, lost = load_custom_providers(cfg_path)
+    assert glm.web_search["api_key"] == "sk-ds"
+    assert "api_key_from" not in glm.web_search
+    assert lost.web_search is None
+    assert lost.capabilities == []
