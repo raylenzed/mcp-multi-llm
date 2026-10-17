@@ -166,6 +166,7 @@ Restart your agent and the tools will be available.
 | `MCP_HOST_PROVIDER` | 当前主控 AI 的名称，跳过注册对应的 `discuss_with_*` 工具 | `claude`、`codex` |
 | `MCP_PROJECT` | 项目标识，历史记录存入独立子目录（不设则取 CWD 目录名） | `my-web-app` |
 | `MCP_LANGUAGE` | 语言偏好，所有 AI 回复都会使用该语言 | `zh`、`en`、`ja` |
+| `MCP_DISABLED_PROVIDERS` | 逗号分隔的 provider 名称，完全不加载、不注册对应工具 | `gemini`、`gemini,deepseek` |
 
 支持的语言代码：`zh`（中文）、`en`（英文）、`ja`（日文）、`ko`（韩文）、`fr`（法文）、`de`（德文）、`es`（西班牙文）、`ru`（俄文）、`pt`（葡萄牙文）
 
@@ -252,6 +253,7 @@ For providers that implement the Anthropic `/v1/messages` API format:
 ```
 
 Claude/Codex/Gemini 等 CLI provider 默认视为可自采；普通 HTTP API provider 默认只参与评审，不计入独立搜索证据。
+
 
 ### Common providers / 常用 provider 参考
 

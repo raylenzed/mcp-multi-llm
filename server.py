@@ -25,6 +25,15 @@ _HOST = os.environ.get("MCP_HOST_PROVIDER", "").lower().strip()
 if _HOST:
     logger.info(f"[server] Host provider: '{_HOST}' — its discuss tool will be omitted.")
 
+# Disabled providers: e.g. MCP_DISABLED_PROVIDERS=gemini → never load or register gemini
+_DISABLED = {
+    name.strip().lower()
+    for name in os.environ.get("MCP_DISABLED_PROVIDERS", "").split(",")
+    if name.strip()
+}
+if _DISABLED:
+    logger.info(f"[server] Disabled providers: {', '.join(sorted(_DISABLED))}")
+
 # Language preference: e.g. MCP_LANGUAGE=zh → all providers respond in Chinese
 _LANGUAGE = os.environ.get("MCP_LANGUAGE", "").strip() or None
 if _LANGUAGE:
@@ -101,6 +110,9 @@ for _name, _session in [("claude", claude), ("codex", codex), ("gemini", gemini)
     if _name == _HOST:
         logger.info(f"[server] Skipping '{_name}' (host provider).")
         continue
+    if _name in _DISABLED:
+        logger.info(f"[server] Skipping '{_name}' (disabled).")
+        continue
     _all_providers[_name] = _session
 
 
@@ -123,6 +135,9 @@ def _make_discuss_tool(session: BaseSession):
 
 
 for _cfg in _custom_cfgs:
+    if _cfg.name.lower() in _DISABLED:
+        logger.info(f"[server] Skipping custom provider '{_cfg.name}' (disabled).")
+        continue
     _session = _session_from_cfg(_cfg)
     _all_providers[_cfg.name] = _session
     mcp.tool()(_make_discuss_tool(_session))
@@ -311,7 +326,7 @@ async def app_factory_roundtable(
     )
 
 
-if _HOST != "claude":
+if "claude" in _all_providers:
     @mcp.tool()
     async def discuss_with_claude(message: str, topic: str = "general") -> str:
         """Discuss with Claude (Anthropic). Maintains conversation context per topic.
@@ -323,7 +338,7 @@ if _HOST != "claude":
         return await claude.send(message, topic)
 
 
-if _HOST != "codex":
+if "codex" in _all_providers:
     @mcp.tool()
     async def discuss_with_codex(message: str, topic: str = "general") -> str:
         """Discuss with Codex (OpenAI). Maintains conversation context per topic.
@@ -335,7 +350,7 @@ if _HOST != "codex":
         return await codex.send(message, topic)
 
 
-if _HOST != "gemini":
+if "gemini" in _all_providers:
     @mcp.tool()
     async def discuss_with_gemini(message: str, topic: str = "general") -> str:
         """Discuss with Gemini (Google). Maintains conversation context per topic.
